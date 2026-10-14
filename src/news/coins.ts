@@ -84,16 +84,19 @@ export function canonicalUrl(u: string): string {
 /** Plain text from HTML or CDATA, collapsed and capped. */
 export function plainText(s: string | undefined, max = 300): string {
   if (!s) return "";
-  const t = s
-    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+  // Feeds carry escaped HTML inside XML: two layers of entities. Decode the XML layer, strip tags, then decode the
+  // HTML layer (&amp; last in each, so "&amp;lt;" stays text).
+  const decode = (x: string) =>
+    x
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;|&apos;/g, "'")
+      .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)))
+      .replace(/&amp;/g, "&");
+  const t = decode(decode(s.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")).replace(/<[^>]+>/g, " "))
     .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;|&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)))
     .replace(/\s+/g, " ")
     .trim();
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;

@@ -84,7 +84,8 @@ export function volPercentile(c: Candle[], period = 14, lookback = 168): number 
   const hist = atrs.slice(-lookback);
   if (hist.length < 10) return null;
   const cur = hist[hist.length - 1]!;
-  return hist.filter((x) => x <= cur).length / hist.length;
+  // Mid-rank: ties count half, so a perfectly steady market sits at 0.5, not at the top.
+  return (hist.filter((x) => x < cur).length + 0.5 * hist.filter((x) => x === cur).length) / hist.length;
 }
 
 export function classifyRegime(c1h: Candle[], o: RegimeOpts = REGIME_DEFAULTS): Regime {

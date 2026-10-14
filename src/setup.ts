@@ -222,7 +222,7 @@ export class Setup {
   announce(): void {
     log.info("setup is open: open this server's address in a browser to set up your wasps", { windowMin: this.o.windowMin });
     // The one place the code appears. Printed to stdout on purpose (docker compose logs engine), never sent anywhere.
-    if (this.code) console.log(`\n  WaspBot setup code: ${this.code}\n  (enter it on the Setup page; it is valid until Setup is saved or the container restarts)\n`);
+    if (this.code) process.stdout.write(`\n  WaspBot setup code: ${this.code}\n  (enter it on the Setup page; it is valid until Setup is saved or the container restarts)\n\n`);
     const t = setTimeout(() => {
       if (!this.saved) log.warn("setup timed out; restart the engine container to open it again");
     }, this.o.windowMin * 60_000);

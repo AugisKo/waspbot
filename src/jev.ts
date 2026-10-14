@@ -325,7 +325,7 @@ export class Jev {
 
   async decide(ask: JevAsk): Promise<JevResult> {
     const r = await this.decideInner(ask);
-    if (r.ok && r.source === "code" && r.fallbackReason && r.fallbackReason !== "single_option" && r.fallbackReason !== "paced") {
+    if (r.ok && r.source === "code" && r.fallbackReason && r.fallbackReason !== "single_option" && r.fallbackReason !== "paced" && r.fallbackReason !== "engine_rules") {
       this.lastFallback = { reason: r.fallbackReason, at: this.now() };
     }
     return r;
