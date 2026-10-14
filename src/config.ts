@@ -96,9 +96,9 @@ const EnvSchema = z.object({
   OPENAI_MIN_INTERVAL_MS: num(60_000),
   // The decision engine: "rules" (code only, free, backtestable) or "llm" (a model picks, the rules are its fallback).
   // Blank = "llm" when a model key is set, else "rules". Switchable at runtime from the dashboard (owner password).
-  DECISION_ENGINE: z.enum(["rules", "llm"]).optional(),
+  DECISION_ENGINE: opt.pipe(z.enum(["rules", "llm"]).optional()),
   // Which model when DECISION_ENGINE=llm: auto picks the first one with a key in the order gemini, claude, jev, openai.
-  LLM_PROVIDER: z.enum(["auto", "gemini", "claude", "openai", "jev"]).optional().default("auto"),
+  LLM_PROVIDER: str("auto").pipe(z.enum(["auto", "gemini", "claude", "openai", "jev"])),
   TYPESAFE_API_KEY: opt,
   JEV_MODEL: str("jev-1.13.0"),
   JEV_TIMEOUT_MS: num(2000),
@@ -160,7 +160,7 @@ const EnvSchema = z.object({
   KNOWLEDGE_CALENDAR: bool(true),
   KNOWLEDGE_MEMORY: bool(true),
   KNOWLEDGE_NOTES: bool(true),
-  KNOWLEDGE_LLM_PROVIDER: z.enum(["auto", "gemini", "claude", "openai", "off"]).optional().default("auto"),
+  KNOWLEDGE_LLM_PROVIDER: str("auto").pipe(z.enum(["auto", "gemini", "claude", "openai", "off"])),
   KNOWLEDGE_LLM_MODEL: opt,
   KNOWLEDGE_DAILY_USD_CAP: num(1),
   CLAUDE_USD_PER_SEARCH: num(0.01),
