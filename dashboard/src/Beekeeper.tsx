@@ -60,7 +60,7 @@ function Who({ bee, big }: { bee: BeeName | null; big?: boolean }) {
   return (
     <img
       className={`keeper-who ${big ? "big" : ""} ${meta ? "" : "nobody"}`}
-      src={meta ? meta.img : "/beekeeper.jpg"}
+      src={meta ? meta.img : "/keeper.svg"}
       alt={meta ? meta.title : "nobody"}
       title={meta ? meta.title : "No bee was rewritten"}
       style={meta ? { ["--bee" as string]: meta.color } : undefined}
@@ -165,7 +165,7 @@ export function Beekeeper({ keeper }: { keeper: KeeperState | undefined }) {
   return (
     <section className={`rail-card keeper ${fresh ? "keeper-fresh" : ""}`}>
       <div className="keeper-head">
-        <img className="keeper-face" src="/beekeeper.jpg" alt="" />
+        <img className="keeper-face" src="/keeper.svg" alt="" />
         <div className="keeper-title">
           <span className="eyebrow keeper-eyebrow">The Beekeeper</span>
           <span className="keeper-sub dim">

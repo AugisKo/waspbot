@@ -328,9 +328,9 @@ describe("finishDesign", () => {
 
   it("says why when the brain is switched, and stays quiet when it isn't", () => {
     expect(finishDesign(design({ coins: ["SOL", "PEPE"], baseStyle: "bizzy" }), COINS).styleNote).toBe(
-      "Breakout only trades BTC, ETH, SOL, HYPE, XRP, SUI, DOGE and LINK, so with SOL and PEPE this bee runs on Momentum.",
+      "Breakout only trades BTC, ETH, SOL, HYPE, XRP, SUI, DOGE and LINK, so with SOL and PEPE this wasp runs on Momentum.",
     );
-    expect(finishDesign(design({ coins: [], baseStyle: "breezy" }), COINS).styleNote).toBe("Trend only trades BTC and ETH, so on any coin this bee runs on Momentum.");
+    expect(finishDesign(design({ coins: [], baseStyle: "breezy" }), COINS).styleNote).toBe("Trend only trades BTC and ETH, so on any coin this wasp runs on Momentum.");
     expect(finishDesign(design({ coins: ["BTC"], baseStyle: "breezy" }), COINS).styleNote).toBeUndefined();
     expect(finishDesign(design({ coins: ["DOGE"], baseStyle: "boozy" }), COINS).styleNote).toBeUndefined();
   });

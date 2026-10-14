@@ -648,7 +648,7 @@ export class Engine {
       this.d.db.setMeta("experiment_flat_at", String(now));
       this.lastReconAt = 0; // confirm flat against OKX on the next tick
       this.d.bus.emit("status", { event: "experiment_closed" }, now);
-      this.d.alerts.send("experiment closed: every bee is flat");
+      this.d.alerts.send("experiment closed: every wasp is flat");
     }
   }
 
@@ -1033,7 +1033,7 @@ export class Engine {
       this.jevDownAlerted = false;
     } else if (!this.jevDownAlerted && now - since > 5 * 60_000) {
       this.jevDownAlerted = true;
-      this.d.alerts.send(`${this.chooser().full} unreachable for over 5 minutes: bees are on the code fallback`);
+      this.d.alerts.send(`${this.chooser().full} unreachable for over 5 minutes: wasps are on the code fallback`);
     }
   }
 

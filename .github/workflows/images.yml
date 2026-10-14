@@ -46,7 +46,7 @@ jobs:
         run: echo "lc=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
       - id: tags
         env:
-          IMG: ghcr.io/${{ steps.owner.outputs.lc }}/beebots-${{ matrix.name }}
+          IMG: ghcr.io/${{ steps.owner.outputs.lc }}/waspbot-${{ matrix.name }}
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             v="${GITHUB_REF_NAME#v}"

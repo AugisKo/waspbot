@@ -265,7 +265,7 @@ export function applyRisk(input: RiskInput): RiskResult {
   }
 
   // 3. Jev fail-closed: hold whatever we have, open nothing.
-  if (jev === "daily_cap") return out(NONE, { vetoedBy: "jev_daily_cap", status: "Jev daily cap hit: all bees hold" });
+  if (jev === "daily_cap") return out(NONE, { vetoedBy: "jev_daily_cap", status: "model daily cap hit: all wasps hold" });
   if (jev === "unreachable" || (jev === "ok" && !proposal)) return out(NONE, { vetoedBy: "jev_unreachable", status: "Jev unreachable: holding" });
 
   let intent: Intent = proposal?.intent ?? { kind: "hold" };

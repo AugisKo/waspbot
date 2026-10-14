@@ -11,7 +11,7 @@ FROM node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddf
 # The release this image was built from (set by the GitHub release build). "dev" for local builds: no update check.
 ARG APP_VERSION=dev
 ENV APP_VERSION=${APP_VERSION}
-ENV NODE_ENV=production REF_DIR=/app/ref SETTINGS_PATH=/data/settings.json
+ENV NODE_ENV=production SETTINGS_PATH=/data/settings.json EVENTS_PATH=/data/events.json NOTES_DIR=/data/notes
 WORKDIR /app
 # OKX CLI profiles (site = "eea", no keys; keys come from the environment per call) and its 7-day trade log live here.
 RUN mkdir -p /home/node/.okx /data && chown -R node:node /home/node /data
@@ -21,8 +21,8 @@ COPY --chown=node:node package.json ./
 COPY --chown=node:node scripts/okx-profiles.sh ./scripts/okx-profiles.sh
 # Gemini 4 Argon's intended knobs, for `dist/tools/effective-config.js --diff` (README: Run it with Gemini 4 Argon).
 COPY --chown=node:node strategies/ARGON_INTENDED.json ./strategies/ARGON_INTENDED.json
-# The three original portraits: the default art, and the style reference for generated bees.
-COPY --chown=node:node dashboard/public/bees ./ref
+# Example event calendar (copied into the data volume on first start if there is none).
+COPY --chown=node:node docs/events.example.json ./docs/events.example.json
 USER node
 ENV HOME=/home/node
 RUN sh ./scripts/okx-profiles.sh

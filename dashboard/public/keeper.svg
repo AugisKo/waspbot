@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
+  <title>The Keeper</title>
+  <rect width="120" height="120" rx="18" fill="#14130f"/>
+  <circle cx="60" cy="46" r="18" fill="#c9bfa8"/>
+  <path d="M30 100c3-20 15-30 30-30s27 10 30 30z" fill="#6b7a5a"/>
+  <path d="M38 40c2-14 12-22 22-22s20 8 22 22c-6-4-14-6-22-6s-16 2-22 6z" fill="#e8b10c"/>
+  <path d="M34 42h52" stroke="#e8b10c" stroke-width="4" stroke-linecap="round"/>
+  <path d="M42 46h36v10c0 3-2 5-5 5H47c-3 0-5-2-5-5z" fill="#14130f" fill-opacity=".55"/>
+</svg>

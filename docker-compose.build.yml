@@ -2,15 +2,15 @@
 #   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 services:
   engine:
-    image: beebots-engine:local
+    image: waspbot-engine:local
     build: .
   web:
-    image: beebots-web:local
+    image: waspbot-web:local
     build:
       context: .
       dockerfile: deploy/web.Dockerfile
   backup:
-    image: beebots-backup:local
+    image: waspbot-backup:local
     build:
       context: deploy
       dockerfile: backup.Dockerfile

@@ -1,4 +1,4 @@
-import { existsSync, unlinkSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Alerts } from "./alerts.js";
 import { BREEZY_COINS } from "./bees/breezy.js";
@@ -42,8 +42,8 @@ import { TradeMemory } from "./knowledge/memory.js";
 import { OwnerNotes } from "./knowledge/notes.js";
 
 const SETTINGS_PATH = process.env.SETTINGS_PATH?.trim() || "./data/settings.json";
-// Reference portraits for generated bees: the dashboard's default art (copied into the image by the Dockerfile).
-const REF_DIR = process.env.REF_DIR?.trim() || "./dashboard/public/bees";
+// Optional style references for generated portraits (REF_DIR with up to three .jpg files). None = text prompt only.
+const REF_DIR = process.env.REF_DIR?.trim() || "./data/portrait-refs";
 
 /** Names, rules, styles and pictures for the dashboard. The rules and coins are the ones each bee trades on right now. */
 function profile(cfg: Config | null, lab?: LabStore) {
@@ -63,9 +63,8 @@ function profile(cfg: Config | null, lab?: LabStore) {
             styleLabel: STYLE_INFO[s.style].label,
             rules: live.rules,
             coins: live.coins,
-            // A Setup-made bee only ever shows its own portrait (null = the dashboard's placeholder mark), never the
-            // original bees' art, which belongs to the three official bees.
-            img: s.customImage && imagePath(cfg.settingsPath, id) ? `/bee-image/${id}` : s.fromSetup ? null : `/bees/${s.style}.jpg`,
+            // A wasp shows its own generated portrait, or the dashboard's placeholder mark (null).
+            img: s.customImage && imagePath(cfg.settingsPath, id) ? `/bee-image/${id}` : null,
           };
         })
       : [],
@@ -195,6 +194,16 @@ async function main() {
   };
   const hub = new NewsHub({ db, providers, enabled: (id) => controls.get().news[id] && (id !== "cryptopanic" || !!cfg.news.cryptopanicToken) && (id !== "websearch" || !!knowledgeLlm), coins: watchCoins });
   const digests = new DigestStore({ db, hub, llm: () => knowledgeLlm, useLlm: () => controls.get().knowledge.digest, everyMs: kc.digestEveryMs });
+  // First start: put the example calendar (all dates in the past, so it never fires) where the owner will edit it.
+  try {
+    if (!existsSync(kc.eventsPath) && existsSync("./docs/events.example.json")) {
+      mkdirSync(dirname(kc.eventsPath), { recursive: true });
+      copyFileSync("./docs/events.example.json", kc.eventsPath);
+    }
+    mkdirSync(kc.notesDir, { recursive: true });
+  } catch (err) {
+    log.warn("could not create the example events file or the notes folder", { err: safeError(err) });
+  }
   const calendar = new EventCalendar({ path: kc.eventsPath, ...(kc.eventsIcsUrl ? { icsUrl: kc.eventsIcsUrl } : {}) });
   const memory = new TradeMemory(db);
   const notes = new OwnerNotes({ dir: kc.notesDir, maxChars: kc.notesMaxChars });

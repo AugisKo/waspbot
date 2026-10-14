@@ -1,7 +1,7 @@
 // Mirrors the engine's read-only /snapshot and SSE payloads. No account data exists in these shapes.
 import { BEE_MARK_URL } from "./BeeMark";
 
-/** The three bee slots. Names, taglines and portraits come from the engine's /profile (set on the Setup page). */
+/** The three wasp slots (ids kept as bee1..bee3 for compatibility). Names, taglines and portraits come from /profile. */
 export type BeeName = "bee1" | "bee2" | "bee3";
 export const BEE_NAMES: BeeName[] = ["bee1", "bee2", "bee3"];
 
@@ -22,7 +22,7 @@ export interface LastDecision {
 }
 
 /** Who actually made a call: the model, Jev, the deterministic code chooser standing in for it, or the rules. */
-export type DecisionSource = "gemini" | "jev" | "code" | "rules";
+export type DecisionSource = "gemini" | "claude" | "openai" | "jev" | "code" | "rules";
 
 export interface PublicBee {
   bee: BeeName;
@@ -71,9 +71,21 @@ export interface Snapshot {
     /** The latest time the code chooser stood in for the model, and why. */
     lastFallback?: { reason: string; at: number } | null;
     /** The CONFIGURED chooser; who made each call is the decision's own decidedBy. */
-    provider?: "gemini" | "jev" | "code";
+    provider?: "gemini" | "claude" | "openai" | "jev" | "code";
+    /** "rules": the code chooser decides by design; "llm": a model decides, code stands in when it cannot. */
+    engine?: "rules" | "llm";
+    model?: string;
     name?: string;
     fullName?: string;
+  };
+  /** Portfolio rules across all wasps (absent on older engines). */
+  portfolio?: {
+    equityUsd: number;
+    peakUsd: number;
+    netUsd: number;
+    grossUsd: number;
+    netLimitUsd: number;
+    halted: { kind: "drawdown" | "daily"; reason: string; at: number } | null;
   };
   recon: { ok: boolean | null; detail: string; ts: number };
   market: { refreshedAt: number; universe: string[]; spreadBlocked: Array<{ coin: string; spreadBp: number }>; attention: "news" | "volume" };
@@ -186,12 +198,12 @@ export type AnyEvent =
   | { type: "order" | "heartbeat" | "status"; ts: number; [k: string]: unknown };
 
 export interface BeeMeta {
-  /** Card title: "Boozy Bee" for the official three, the owner's own name for a Setup-made bee. */
+  /** Card title: the wasp's name. */
   title: string;
   short: string;
   tagline: string;
   styleLabel: string;
-  /** The owner's rules for this bee (Setup), "" for the original three. */
+  /** The owner's rules for this wasp (Setup), "" for the built-in three. */
   rules: string;
   coins: string[];
   img: string;
@@ -201,9 +213,9 @@ export interface BeeMeta {
 
 /** Colours belong to the slot, so two bees on the same style still look different. Filled in from /profile at load. */
 export const BEE_META: Record<BeeName, BeeMeta> = {
-  bee1: { title: "Bizzy Bee", short: "Bizzy", tagline: "the grinder", styleLabel: "Breakout", rules: "", coins: [], img: "/bees/bizzy.jpg", color: "var(--bizzy)", glow: "var(--bizzy-glow)" },
-  bee2: { title: "Breezy Bee", short: "Breezy", tagline: "the calculated one", styleLabel: "Trend", rules: "", coins: [], img: "/bees/breezy.jpg", color: "var(--breezy)", glow: "var(--breezy-glow)" },
-  bee3: { title: "Boozy Bee", short: "Boozy", tagline: "the degen", styleLabel: "Momentum", rules: "", coins: [], img: "/bees/boozy.jpg", color: "var(--boozy)", glow: "var(--boozy-glow)" },
+  bee1: { title: "Jacket", short: "Jacket", tagline: "the striker", styleLabel: "Breakout", rules: "", coins: [], img: BEE_MARK_URL, color: "var(--bizzy)", glow: "var(--bizzy-glow)" },
+  bee2: { title: "Vespa", short: "Vespa", tagline: "the patient one", styleLabel: "Trend", rules: "", coins: [], img: BEE_MARK_URL, color: "var(--breezy)", glow: "var(--breezy-glow)" },
+  bee3: { title: "Hornet", short: "Hornet", tagline: "the chaser", styleLabel: "Momentum", rules: "", coins: [], img: BEE_MARK_URL, color: "var(--boozy)", glow: "var(--boozy-glow)" },
 };
 
 export interface Profile {
@@ -216,15 +228,13 @@ export interface Profile {
 
 export const PROFILE: { links: Profile["links"] } = { links: null };
 
-const OFFICIAL_NAMES = ["Bizzy", "Breezy", "Boozy"];
-
 export function applyProfile(p: Profile): void {
   PROFILE.links = p.links;
   for (const b of p.bees) {
     const m = BEE_META[b.id];
     if (!m) continue;
     m.short = b.name;
-    m.title = OFFICIAL_NAMES.includes(b.name) ? `${b.name} Bee` : b.name;
+    m.title = b.name;
     m.tagline = b.tagline;
     m.styleLabel = b.styleLabel;
     m.rules = b.rules ?? "";
@@ -235,7 +245,7 @@ export function applyProfile(p: Profile): void {
 
 /** Shown on Setup and in the dashboard's Hive dialog. */
 export const HIVE_DISCLAIMER =
-  "You're about to share your bees' names, styles and paper-trading results on the public leaderboard at beebots.tech. The board shows % gain/loss only. No keys, no exchange account details, no IP address. Paper trading only. Not financial advice. You can leave any time.";
+  "You're about to share your wasps' names, styles and paper-trading results on this server's configured public leaderboard (HIVE_URL). The board shows % gain/loss only. No keys, no exchange account details, no IP address. Paper trading only. Not financial advice. You can leave any time.";
 
 /** The engine's GET /hive/status. No hive id, no key. */
 export interface HiveStatus {
@@ -254,6 +264,33 @@ export interface HiveStatus {
 
 /** The chooser's short name for labels ("Argon", "Jev", "Code"). Older engines did not send one: they ran Jev. */
 export const chooserShort = (snap: Snapshot | null | undefined): string => snap?.jev?.name ?? "Jev";
+
+/** GET /controls: runtime switches (no secrets: which providers have a key is true/false only). */
+export interface ControlsState {
+  controls: {
+    engine: "rules" | "llm";
+    provider: "gemini" | "claude" | "openai" | "jev" | null;
+    regimeFilter: boolean;
+    news: { rss: boolean; cryptopanic: boolean; websearch: boolean; okx: boolean };
+    knowledge: { digest: boolean; calendar: boolean; memory: boolean; notes: boolean };
+  };
+  available: Record<"gemini" | "claude" | "openai" | "jev", boolean>;
+  ownerPasswordSet: boolean;
+  chooser?: { engine: string; provider: string; model: string };
+  knowledgeModel?: { provider: string; model: string } | null;
+  knowledgeBudget?: { spentTodayUsd: number; capUsd: number };
+  newsConfigured?: { rss: boolean; cryptopanic: boolean; websearch: boolean; okx: boolean };
+}
+
+/** GET /knowledge: what the knowledge layer sees right now. */
+export interface KnowledgeState {
+  news: Array<{ title: string; url: string | null; publisher: string; publishedAt: number; coins: string[]; source: string }>;
+  counts: Record<string, number>;
+  digests: Array<{ coin: string; at: number; sentiment: number; confidence: number; flags: string[]; events: string[]; items: number; by: "keywords" | "llm" }>;
+  events: Array<{ at: number; title: string; impact: "high" | "medium" | "low"; coins: string[] }>;
+  memory: { trades: number; byStyle: Array<{ style: string; n: number; winRate: number; avgR: number }> };
+  notes: number;
+}
 
 /** Why the code chooser made a call instead of the model, in words ("Argon answered off the menu"). */
 export function fallbackText(reason: string | null | undefined, who: string): string {

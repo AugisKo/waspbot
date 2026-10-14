@@ -97,7 +97,7 @@ export function finishDesign(raw: BeeDesign, known: string[]): BeeDesign {
   const asked = [...new Set(raw.coins.map((c) => c.trim().toUpperCase().replace(/-.*$/, "")).filter(Boolean))];
   const coins = asked.filter((c) => set.has(c)).slice(0, 20);
   if (asked.length && !coins.length) {
-    throw new DesignError(`${asked.slice(0, 5).join(", ")} ${asked.length > 1 ? "aren't" : "isn't"} tradable on OKX EEA right now. Try describing your bee again with a coin like BTC, ETH, SOL or DOGE.`);
+    throw new DesignError(`${asked.slice(0, 5).join(", ")} ${asked.length > 1 ? "aren't" : "isn't"} tradable on OKX EEA right now. Try describing your wasp again with a coin like BTC, ETH, SOL or DOGE.`);
   }
   const rules = raw.rules.replace(/\s+/g, " ").trim().slice(0, 500);
   if (rules.length < 10) throw new DesignError("The designer didn't write any rules. Press Create again.");
@@ -117,7 +117,7 @@ const list = (xs: readonly string[]) => (xs.length > 1 ? `${xs.slice(0, -1).join
 export function styleNote(wanted: BeeDesign["baseStyle"], got: BeeDesign["baseStyle"], coins: string[]): string {
   const only = STYLE_COINS[wanted] ?? [];
   const what = coins.length ? `with ${list(coins)}` : "on any coin";
-  return `${STYLE_INFO[wanted].label} only trades ${list(only)}, so ${what} this bee runs on ${STYLE_INFO[got].label}.`;
+  return `${STYLE_INFO[wanted].label} only trades ${list(only)}, so ${what} this wasp runs on ${STYLE_INFO[got].label}.`;
 }
 
 export function imageDir(settingsPath: string): string {
@@ -345,7 +345,7 @@ export class Setup {
         if (!key) return send(res, 400, { error: "Designing a wasp needs an OpenAI key." });
         if (description.length < 3) return send(res, 400, { error: "Tell us how you want this wasp to trade first." });
         if (description.length > 400) return send(res, 400, { error: "Keep it under 400 characters." });
-        if (this.designs >= MAX_DESIGNS) return send(res, 429, { error: "That is a lot of bees. Restart the engine to design more." });
+        if (this.designs >= MAX_DESIGNS) return send(res, 429, { error: "That is a lot of wasps. Restart the engine to design more." });
         let known: string[];
         try {
           known = await this.coinList();
