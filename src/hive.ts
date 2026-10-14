@@ -1,4 +1,4 @@
-// The Hive: an opt-in public leaderboard at beebots.tech (HIVE_URL). A joined install reports its bees (name, style,
+// The Hive: an opt-in public leaderboard at HIVE_URL (none by default in WaspBot). A joined install reports its bees (name, style,
 // tagline, trading rules and coins, equity, funding, trade count) and every fill since the experiment started, every 5 minutes. The server checks each
 // fill against OKX's public candles and replays the books, so a bee's badge means its numbers add up.
 // Paper only: the reporter refuses to run in MODE=live, and the server rejects live reports too.
@@ -63,9 +63,9 @@ function appVersion(): string {
   try {
     // ../package.json from both src/ (dev) and dist/ (the image).
     const v = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version?: string }).version;
-    return `beebots/${v ?? "unknown"}`;
+    return `waspbot/${v ?? "unknown"}`;
   } catch {
-    return "beebots/unknown";
+    return "waspbot/unknown";
   }
 }
 

@@ -522,7 +522,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, settings: Setti
     hive: { url: e.HIVE_URL.replace(/\/+$/, "") },
     update: { enabled: e.UPDATE_CHECK, repo: e.UPDATE_REPO, version: e.APP_VERSION },
     settingsPath: e.SETTINGS_PATH,
-    jev: { engine, ...(provider === "code" ? { ...llm.gemini!, provider: "code" as const, apiKey: "" } : llm[provider]!) },
+    jev: { engine, ...(provider === "code" ? { ...llm.gemini!, provider: "code" as const, apiKey: "", model: "code" } : llm[provider]!) },
     llm: Object.fromEntries(Object.entries(llm).filter(([p]) => keys[p as keyof typeof keys])),
     tickMs: Math.max(1000, e.TICK_MS),
     dataRefreshMs: Math.max(15_000, e.DATA_REFRESH_MS),

@@ -1,11 +1,10 @@
-// First-run Setup: shown instead of the dashboard until the engine has a decision-model key (Gemini or Jev). No code needed: the first person to
-// finish it owns the server, and it closes for good once saved (or times out after SETUP_WINDOW_MIN, until the engine
-// restarts). The owner picks an owner password here for later dashboard writes. Keys go straight to the engine.
-// Each bee is designed from one sentence (OpenAI invents its name, rules, coins and look; the engine checks them),
-// then painted. A bee without its own portrait shows the placeholder mark, never the official bees' art.
+// First-run Setup: shown instead of the dashboard until the engine is set up. It starts with the one-time setup code
+// from the engine's log (so whoever reaches a fresh server first cannot take it), closes for good once saved, and times
+// out after SETUP_WINDOW_MIN. The owner picks an owner password here for the dashboard's controls. Keys go straight to
+// the engine. Each wasp is designed from one sentence (OpenAI invents its name, rules, coins and look; the engine
+// checks them), then painted.
 import { useEffect, useState } from "react";
 import { BEE_MARK_URL } from "./BeeMark";
-import { HIVE_DISCLAIMER } from "./types";
 
 interface StyleInfo {
   id: string;
@@ -21,6 +20,8 @@ interface Status {
   secure: boolean;
   serverHasOpenAiKey: boolean;
   styles: StyleInfo[];
+  codeRequired?: boolean;
+  codeLocked?: boolean;
 }
 interface Design {
   name: string;
@@ -44,35 +45,38 @@ interface BeeDraft {
 }
 
 const EXAMPLES = [
-  "a Trump bee that only ever trades TRUMP",
-  "a sleepy bee that only buys bitcoin dips",
-  "a meme-coin gremlin that chases whatever is pumping",
+  "a patient wasp that only trades BTC and ETH trends",
+  "a wasp that only buys solana dips",
+  "a meme-coin hunter that chases whatever is pumping",
 ];
 
-/** Same rule as the engine: the official bees' names (and obvious spellings) are theirs. */
+/** Same rule as the engine: the built-in wasps' names (and obvious spellings) are theirs. */
 const squash = (s: string) =>
   s
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, "")
-    .replace(/bee$/, "")
+    .replace(/(wasp|bee)$/, "")
     .replace(/(.)\1+/g, "$1")
     .replace(/(ie|ey|i)$/, "y");
-const RESERVED = new Set(["bizzy", "breezy", "boozy"].map(squash));
+const RESERVED = new Set(["jacket", "vespa", "hornet"].map(squash));
 const nameProblem = (name: string): string | null =>
   !/^[\p{L}\p{N} .'_-]{1,24}$/u.test(name.trim())
     ? "Names are 1-24 letters, numbers, spaces and . ' _ -"
     : RESERVED.has(squash(name))
-      ? "Bizzy, Breezy and Boozy are the official bees. Pick another name."
+      ? "Jacket, Vespa and Hornet are the built-in wasps. Pick another name."
       : null;
 
-const STEPS = ["The rules", "Password", "Decisions", "OpenAI", "Your bees", "The Hive", "Start"] as const;
+const STEPS = ["Setup code", "The rules", "Password", "Decisions", "OpenAI", "Your wasps", "Start"] as const;
 
 class TimedOut extends Error {}
+
+/** The setup code typed on the first step; every write carries it. */
+let SETUP_CODE = "";
 
 async function post<T>(path: string, body: unknown): Promise<T> {
   const r = await fetch(`/setup/${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-setup-code": SETUP_CODE },
     body: JSON.stringify(body),
   });
   const j = (await r.json().catch(() => ({}))) as T & { error?: string };
@@ -88,14 +92,14 @@ export function Setup() {
   const [password2, setPassword2] = useState("");
   const [timedOut, setTimedOut] = useState(false);
   const [accept, setAccept] = useState({ notAdvice: false, paperDefault: false, ownRisk: false });
-  // The decision model: Gemini 4 Argon by default, or Jev (TypeSafe AI).
-  const [chooser, setChooser] = useState<"gemini" | "jev">("gemini");
+  const [code, setCode] = useState("");
+  // The decision engine: the rules (no key), or a model: Claude, Gemini or Jev.
+  const [chooser, setChooser] = useState<"rules" | "claude" | "gemini" | "jev">("rules");
   const [modelKey, setModelKey] = useState("");
   const [keyOk, setKeyOk] = useState(false);
   const [openaiKey, setOpenaiKey] = useState("");
   const [openaiOk, setOpenaiOk] = useState(false);
   const [bees, setBees] = useState<BeeDraft[]>([]);
-  const [hive, setHive] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
@@ -105,6 +109,7 @@ export function Setup() {
       .then((r) => r.json() as Promise<Status>)
       .then((s) => {
         setStatus(s);
+        if (s.codeRequired === false) setStep(1);
         setBees([0, 1, 2].map(() => ({ ask: "", design: null, img: null, busy: "", error: "" })));
       })
       .catch(() => setError("Can't reach the engine. Give it a few seconds, then reload."));
@@ -176,7 +181,8 @@ export function Setup() {
   const save = () =>
     run(async () => {
       await post("save", {
-        ...(chooser === "gemini" ? { geminiKey: modelKey } : { jevKey: modelKey }),
+        engine: chooser === "rules" ? "rules" : "llm",
+        ...(chooser === "gemini" ? { geminiKey: modelKey } : chooser === "claude" ? { anthropicKey: modelKey } : chooser === "jev" ? { jevKey: modelKey } : {}),
         ...(openaiKey ? { openaiKey } : {}),
         accept,
         ownerPassword: password,
@@ -189,7 +195,7 @@ export function Setup() {
           look: b.design!.look,
           image: !!b.img,
         })),
-        hive,
+        hive: false,
       });
       setDone(true);
     });
@@ -198,7 +204,7 @@ export function Setup() {
     return (
       <div className="setup">
         <div className="setup-card">
-          <h1>beebots</h1>
+          <h1>WaspBot</h1>
           <p className="dim">{error || "Loading…"}</p>
         </div>
       </div>
@@ -223,7 +229,7 @@ export function Setup() {
     return (
       <div className="setup">
         <div className="setup-card center">
-          <h1>Starting your bees 🐝</h1>
+          <h1>Starting your wasps</h1>
           <p>Saved. The engine is restarting in paper trading. This page opens the dashboard as soon as it's back, usually within a minute.</p>
         </div>
       </div>
@@ -237,7 +243,7 @@ export function Setup() {
     <div className="setup">
       <div className="setup-card">
         <div className="setup-head">
-          <h1>beebots setup</h1>
+          <h1>WaspBot setup</h1>
           <ol className="setup-steps">
             {STEPS.map((s, i) => (
               <li key={s} className={i === step ? "on" : i < step ? "done" : ""}>
@@ -256,18 +262,50 @@ export function Setup() {
 
         {step === 0 && (
           <section>
+            <h2>Setup code</h2>
+            {status.codeLocked ? (
+              <p className="setup-err">
+                Too many wrong codes. Restart the engine container (<code>docker compose restart engine</code>); a new code is printed in its log.
+              </p>
+            ) : (
+              <>
+                <p>
+                  To prove this is your server, type the setup code from the engine's log. Run <code>docker compose logs engine</code> on the server (or
+                  open the <b>engine</b> container's logs in your host's Docker manager) and look for <b>WaspBot setup code</b>.
+                </p>
+                <input
+                  className="setup-input mono"
+                  autoComplete="off"
+                  placeholder="XXXXX-XXXXX-XXXXX"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && code.trim().length >= 8 && !busy && void run(async () => ((SETUP_CODE = code.trim()), await post("check-code", {}), setStep(1)))}
+                  autoFocus
+                />
+              </>
+            )}
+            <div className="setup-actions">
+              <button disabled={busy || code.trim().length < 8 || !!status.codeLocked} onClick={() => run(async () => ((SETUP_CODE = code.trim()), await post("check-code", {}), setStep(1)))}>
+                {busy ? "Checking…" : "Continue"}
+              </button>
+            </div>
+          </section>
+        )}
+
+        {step === 1 && (
+          <section>
             <h2>Before anything else</h2>
-            <p>beebots is an experiment and a piece of open-source software, not a trading product. Tick all three to carry on.</p>
+            <p>WaspBot is an experiment and a piece of open-source software, not a trading product. Tick all three to carry on.</p>
             <label className="setup-check">
               <input type="checkbox" checked={accept.notAdvice} onChange={(e) => setAccept({ ...accept, notAdvice: e.target.checked })} />
               <span>
-                <b>This is not financial advice.</b> Nothing the bees do, and nothing in the video or the code, is a recommendation to buy or sell anything.
+                <b>This is not financial advice.</b> Nothing the wasps do, and nothing in the code, is a recommendation to buy or sell anything.
               </span>
             </label>
             <label className="setup-check">
               <input type="checkbox" checked={accept.paperDefault} onChange={(e) => setAccept({ ...accept, paperDefault: e.target.checked })} />
               <span>
-                <b>My bees trade on paper.</b> They use real market prices and simulated money. Nothing touches an exchange account unless I change the
+                <b>My wasps trade on paper.</b> They use real market prices and simulated money. Nothing touches an exchange account unless I change the
                 server settings myself, on purpose.
               </span>
             </label>
@@ -279,18 +317,19 @@ export function Setup() {
               </span>
             </label>
             <div className="setup-actions">
-              <button disabled={!accept.notAdvice || !accept.paperDefault || !accept.ownRisk} onClick={() => setStep(1)}>
+              <button disabled={!accept.notAdvice || !accept.paperDefault || !accept.ownRisk} onClick={() => setStep(2)}>
                 I agree
               </button>
             </div>
           </section>
         )}
 
-        {step === 1 && (
+        {step === 2 && (
           <section>
             <h2>Pick an owner password</h2>
             <p>
-              Your dashboard is public, so anything you change from it later (like joining or leaving the Hive) asks for this password. Pick one only
+              Your dashboard is public, so anything you change from it later (the decision engine, news sources, resuming after the portfolio
+              breaker) asks for this password. Pick one only
               you know, at least 8 characters. The server keeps only a scrambled (hashed) copy, so write it down: to reset it, run Setup again (see the
               README).
             </p>
@@ -307,62 +346,80 @@ export function Setup() {
             {password.length > 0 && password.length < 8 && <p className="setup-err small">At least 8 characters.</p>}
             {password2.length > 0 && password.length >= 8 && password2 !== password && <p className="setup-err small">The two don't match yet.</p>}
             <div className="setup-actions">
-              <button className="ghost" onClick={() => setStep(0)}>
+              <button className="ghost" onClick={() => setStep(1)}>
                 Back
               </button>
-              <button disabled={password.length < 8 || password.length > 200 || password !== password2} onClick={() => setStep(2)}>
+              <button disabled={password.length < 8 || password.length > 200 || password !== password2} onClick={() => setStep(3)}>
                 Next
               </button>
             </div>
           </section>
         )}
 
-        {step === 2 && (
+        {step === 3 && (
           <section>
             <h2>Who makes the calls</h2>
-            {chooser === "gemini" ? (
+            <div className="ctl-seg" role="radiogroup" aria-label="Decision engine">
+              {(["rules", "claude", "gemini", "jev"] as const).map((c) => (
+                <button key={c} className={chooser === c ? "on" : ""} onClick={() => (setChooser(c), setModelKey(""), setKeyOk(false))} role="radio" aria-checked={chooser === c}>
+                  {c === "rules" ? "Rules engine" : c === "claude" ? "Claude" : c === "gemini" ? "Gemini" : "Jev"}
+                </button>
+              ))}
+            </div>
+            {chooser === "rules" ? (
               <p>
-                <b>Gemini 4 Argon</b> picks the bees' moves when it is asked (code picks when it is not). Get a key in{" "}
+                <b>The rules engine</b> picks every move with plain code: no key, no cost, and exactly what the backtester measures. Start here; you can
+                switch to a model later from <b>Controls</b> on the dashboard once a key is set.
+              </p>
+            ) : chooser === "claude" ? (
+              <p>
+                <b>Claude</b> picks among the moves the rules allow (code picks when it cannot). Get a key at{" "}
+                <a href="https://console.anthropic.com/" target="_blank" rel="noopener">
+                  console.anthropic.com
+                </a>
+                . The engine asks at most once a minute per wasp and caps spending at $3 a day by default. The same key can read the news for the
+                knowledge layer.
+              </p>
+            ) : chooser === "gemini" ? (
+              <p>
+                <b>Gemini</b> picks among the moves the rules allow (code picks when it cannot). Get a key in{" "}
                 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">
                   Google AI Studio
                 </a>{" "}
-                from a project with billing turned on: the free tier cannot use Argon. The engine asks at most once a minute per bee and caps
-                Gemini spending at $3 a day by default.{" "}
-                <button className="link" onClick={() => (setChooser("jev"), setModelKey(""), setKeyOk(false))}>
-                  Use Jev instead
-                </button>
+                from a project with billing turned on. The engine asks at most once a minute per wasp and caps spending at $3 a day by default.
               </p>
             ) : (
               <p>
-                <b>Jev</b> (from TypeSafe AI) picks the bees' moves when it is asked (code picks when it is not). Get a key at{" "}
+                <b>Jev</b> (TypeSafe AI) picks among the moves the rules allow (code picks when it cannot). Get a key at{" "}
                 <a href="https://console.typesafe.ai/keys" target="_blank" rel="noopener">
                   console.typesafe.ai/keys
                 </a>
-                . Jev charges per decision. The engine stops calling Jev at about $2 a day by default (a soft limit: calls in flight can go a little over).{" "}
-                <button className="link" onClick={() => (setChooser("gemini"), setModelKey(""), setKeyOk(false))}>
-                  Use Gemini 4 Argon instead
-                </button>
+                . The engine stops calling Jev at about $2 a day by default (a soft limit).
               </p>
             )}
-            <input
-              className="setup-input mono"
-              type="password"
-              autoComplete="off"
-              placeholder={chooser === "gemini" ? "Gemini API key" : "Jev API key"}
-              value={modelKey}
-              onChange={(e) => (setModelKey(e.target.value), setKeyOk(false))}
-            />
-            {keyOk && <p className="setup-ok">{chooser === "gemini" ? "✓ Google accepted the key." : "✓ Jev answered. Key works."}</p>}
+            {chooser !== "rules" && (
+              <>
+                <input
+                  className="setup-input mono"
+                  type="password"
+                  autoComplete="off"
+                  placeholder={chooser === "claude" ? "Anthropic API key" : chooser === "gemini" ? "Gemini API key" : "Jev API key"}
+                  value={modelKey}
+                  onChange={(e) => (setModelKey(e.target.value), setKeyOk(false))}
+                />
+                {keyOk && <p className="setup-ok">✓ The key works.</p>}
+              </>
+            )}
             <div className="setup-actions">
-              <button className="ghost" onClick={() => setStep(1)}>
+              <button className="ghost" onClick={() => setStep(2)}>
                 Back
               </button>
-              {keyOk ? (
-                <button onClick={() => setStep(3)}>Next</button>
+              {chooser === "rules" || keyOk ? (
+                <button onClick={() => setStep(4)}>Next</button>
               ) : (
                 <button
                   disabled={busy || modelKey.trim().length < 8}
-                  onClick={() => run(async () => (await post(chooser === "gemini" ? "check-gemini" : "check-jev", { key: modelKey.trim() }), setKeyOk(true)))}
+                  onClick={() => run(async () => (await post(chooser === "claude" ? "check-claude" : chooser === "gemini" ? "check-gemini" : "check-jev", { key: modelKey.trim() }), setKeyOk(true)))}
                 >
                   {busy ? "Checking…" : "Check key"}
                 </button>
@@ -371,11 +428,11 @@ export function Setup() {
           </section>
         )}
 
-        {step === 3 && (
+        {step === 4 && (
           <section>
             <h2>OpenAI key</h2>
             <p>
-              Required. OpenAI designs each bee's trading style from a sentence you write, and paints its portrait. A design is one quick, cheap
+              Required. OpenAI designs each wasp's trading style from a sentence you write, and paints its portrait. A design is one quick, cheap
               ChatGPT call; a portrait takes about 40 seconds and a few cents. The key is only used on this page.
             </p>
             {status.serverHasOpenAiKey ? (
@@ -394,11 +451,11 @@ export function Setup() {
               </>
             )}
             <div className="setup-actions">
-              <button className="ghost" onClick={() => setStep(2)}>
+              <button className="ghost" onClick={() => setStep(3)}>
                 Back
               </button>
               {hasOpenAi ? (
-                <button onClick={() => setStep(4)}>Next</button>
+                <button onClick={() => setStep(5)}>Next</button>
               ) : (
                 <button disabled={busy || openaiKey.trim().length < 8} onClick={() => run(async () => (await post("check-openai", { openaiKey: openaiKey.trim() }), setOpenaiOk(true)))}>
                   {busy ? "Checking…" : "Check key"}
@@ -408,16 +465,13 @@ export function Setup() {
           </section>
         )}
 
-        {step === 4 && (
+        {step === 5 && (
           <section>
-            <h2>Design your bees</h2>
+            <h2>Design your wasps</h2>
             <p>
-              Three bees trade side by side and race each other. For each one, say how you want it to trade. OpenAI turns that into a name, a set of
-              rules and the coins it may trade, then you paint its portrait. Copied a winning bee's rules from{" "}
-              <a href="https://beebots.tech" target="_blank" rel="noopener">
-                beebots.tech
-              </a>
-              ? Paste them in.
+              Three wasps trade side by side. For each one, say how you want it to trade. OpenAI turns that into a name, a set of rules and the coins
+              it may trade, then you paint its portrait. The rules steer the decision among the moves its built-in style offers; the risk layer
+              always has the last word.
             </p>
             <div className="setup-bees">
               {bees.map((b, i) => {
@@ -426,11 +480,11 @@ export function Setup() {
                 return (
                   <div className="setup-bee" key={i} style={{ ["--bee" as string]: `var(--${["bizzy", "breezy", "boozy"][i]})` }}>
                     <div className={`setup-portrait ${b.img ? "" : "empty"}`}>
-                      <img src={b.img ?? BEE_MARK_URL} alt={b.img ? `${d?.name ?? "bee"} portrait` : "no portrait yet"} />
+                      <img src={b.img ?? BEE_MARK_URL} alt={b.img ? `${d?.name ?? "wasp"} portrait` : "no portrait yet"} />
                       {b.busy === "paint" && <span className="setup-portrait-busy">Painting… (~40 s)</span>}
                     </div>
                     <label className="setup-label" htmlFor={`ask-${i}`}>
-                      How do you want this bee to trade?
+                      How do you want this wasp to trade?
                     </label>
                     <textarea
                       id={`ask-${i}`}
@@ -442,7 +496,7 @@ export function Setup() {
                       onChange={(e) => patch(i, { ask: e.target.value })}
                     />
                     <button className={d ? "ghost" : ""} disabled={!!b.busy || b.ask.trim().length < 3} onClick={() => void create(i)}>
-                      {b.busy === "design" ? "Designing…" : d ? "Create again" : "Create my bee"}
+                      {b.busy === "design" ? "Designing…" : d ? "Create again" : "Create my wasp"}
                     </button>
 
                     {d && (
@@ -457,7 +511,7 @@ export function Setup() {
                         {d.styleNote && <p className="setup-note small">{d.styleNote}</p>}
                         <p className="setup-rules">{d.rules}</p>
                         <button className={b.img ? "ghost" : ""} disabled={!!b.busy} onClick={() => void paint(i)}>
-                          {b.busy === "paint" ? "Painting… (~40 s)" : b.img ? "Paint again" : "Generate your bee's portrait"}
+                          {b.busy === "paint" ? "Painting… (~40 s)" : b.img ? "Paint again" : "Generate its portrait"}
                         </button>
                       </div>
                     )}
@@ -467,36 +521,13 @@ export function Setup() {
               })}
             </div>
             <div className="setup-actions">
-              {!beesReady && <span className="dim small setup-hint">Create all three bees and paint their portraits to carry on.</span>}
-              <button className="ghost" onClick={() => setStep(3)}>
-                Back
-              </button>
-              <button disabled={!beesReady || anyBusy} onClick={() => setStep(5)}>
-                Next
-              </button>
-            </div>
-          </section>
-        )}
-
-        {step === 5 && (
-          <section>
-            <h2>Join the Hive?</h2>
-            <p>
-              The Hive is a public leaderboard of everyone's bees at{" "}
-              <a href="https://beebots.tech" target="_blank" rel="noopener">
-                beebots.tech
-              </a>
-              . Your bees race everyone else's, and each fill is checked against OKX's public prices.
-            </p>
-            <div className="setup-hive">{HIVE_DISCLAIMER}</div>
-            <div className="setup-actions">
+              {!beesReady && <span className="dim small setup-hint">Create all three wasps and paint their portraits to carry on.</span>}
               <button className="ghost" onClick={() => setStep(4)}>
                 Back
               </button>
-              <button className="ghost" onClick={() => (setHive(false), setStep(6))}>
-                Not now
+              <button disabled={!beesReady || anyBusy} onClick={() => setStep(6)}>
+                Next
               </button>
-              <button onClick={() => (setHive(true), setStep(6))}>Join the Hive</button>
             </div>
           </section>
         )}
@@ -517,18 +548,17 @@ export function Setup() {
               ))}
             </ul>
             <p>
-              Each bee starts with <b>$333 of paper money</b>, and trades OKX perpetuals at real prices. The engine saves your settings, restarts, and opens
-              the live dashboard. The setup page then closes for good. To run it again later, see the README.
+              Each wasp starts with <b>$333 of paper money</b>, and trades OKX perpetuals at real prices. The engine saves your settings, restarts, and
+              opens the live dashboard. The setup page then closes for good. To run it again later, see the README.
             </p>
             <p>
-              {hive
-                ? "Your bees join the Hive when the engine starts. You can leave any time from the dashboard."
-                : "Your bees stay off the Hive. You can join later from the dashboard."}
+              Decisions: <b>{chooser === "rules" ? "the rules engine" : chooser === "claude" ? "Claude" : chooser === "gemini" ? "Gemini" : "Jev"}</b>. News
+              (free RSS feeds) and the event calendar start on their own; switch anything from <b>Controls</b> on the dashboard.
             </p>
             <p className="dim small">
-              Optional, once you are trading: give your bees a coach. The <b>Beekeeper</b> card on your dashboard connects a Zap on Zapier that can rewrite a
-              losing bee's rules.{" "}
-              <a href="https://github.com/imikerussell/beebots/blob/main/docs/BEEKEEPER.md" target="_blank" rel="noopener">
+              Optional, once you are trading: give your wasps a coach. The <b>Beekeeper</b> card on your dashboard connects a Zap on Zapier that can
+              rewrite a losing wasp's rules.{" "}
+              <a href="https://github.com/AugisKo/waspbot/blob/main/docs/BEEKEEPER.md" target="_blank" rel="noopener">
                 How it works ↗
               </a>
             </p>

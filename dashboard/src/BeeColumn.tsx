@@ -133,7 +133,7 @@ export function BeeColumn({ name, bee, curve, baseline, rank, gap, flash, choose
 
       <div className="last">
         <div className="last-head">
-          <span className="eyebrow">{bee?.last?.decidedBy === "gemini" || bee?.last?.decidedBy === "jev" ? `${chooser}’s last call` : "Last call"}</span>
+          <span className="eyebrow">{bee?.last?.decidedBy && !["code", "rules"].includes(bee.last.decidedBy) ? `${chooser}’s last call` : "Last call"}</span>
           {bee?.last?.latencyMs != null && <span className="dim num">{bee.last.latencyMs} ms</span>}
         </div>
         {cap === "trade_cap" || cap === "fee_budget" ? (

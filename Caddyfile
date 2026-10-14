@@ -1,11 +1,11 @@
-# beebots: SITE_ADDRESS is PUBLIC_DOMAIN when set (Caddy gets the HTTPS certificate itself), otherwise :80 (plain HTTP on any address).
+# WaspBot: SITE_ADDRESS is PUBLIC_DOMAIN when set (Caddy gets the HTTPS certificate itself), otherwise :80 (plain HTTP on any address).
 {$SITE_ADDRESS::80} {
 	encode zstd gzip
 
 	# Read-only engine endpoints. Only GET is proxied; the engine refuses everything else too.
 	@api {
 		method GET
-		path /events /snapshot /history /equity /visit /health /profile /bee-image/* /setup/status /hive/status /keeper/scorecard
+		path /events /snapshot /history /equity /visit /health /profile /bee-image/* /setup/status /hive/status /keeper/scorecard /controls /knowledge
 	}
 	handle @api {
 		reverse_proxy engine:8080 {
@@ -26,6 +26,19 @@
 		reverse_proxy engine:8080 {
 			header_up X-Forwarded-Proto {scheme}
 		}
+	}
+
+	# The owner's runtime controls (engine, news, knowledge) and resuming after the portfolio breaker. The engine needs
+	# the owner password for each.
+	@controls {
+		method POST
+		path /controls /controls/resume
+	}
+	handle @controls {
+		request_body {
+			max_size 8KB
+		}
+		reverse_proxy engine:8080
 	}
 
 	# Joining or leaving the Hive from the dashboard. The engine needs the owner password for both.

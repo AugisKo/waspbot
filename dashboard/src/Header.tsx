@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { money, signed } from "./BeeColumn";
+import { ControlsButton } from "./Controls";
 import { HiveButton } from "./Hive";
 import { chooserShort, fallbackText, PROFILE, type Snapshot } from "./types";
 
@@ -27,22 +28,6 @@ function Recon({ recon, mode }: { recon: Snapshot["recon"] | undefined; mode: Sn
   );
 }
 
-/**
- * Official Hostinger mark: path from Simple Icons 16.32.0 (slug "hostinger", CC0 path data),
- * traced from Hostinger's media kit at https://www.hostinger.com/newsroom. Brand colour #673DE6.
- * Rendered white (single-colour treatment) because purple on this near-black header is too dim on camera.
- */
-function HostingerMark() {
-  return (
-    <svg className="host-mark" viewBox="0 0 24 24" role="img" aria-label="Hostinger">
-      <path
-        fill="currentColor"
-        d="M16.415 0v7.16l5.785 3.384V2.949L16.415 0ZM1.8 0v11.237h18.815L14.89 8.09l-7.457-.003V3.024L1.8 0Zm14.615 20.894v-5.019l-7.514-.005c.007.033-5.82-3.197-5.82-3.197l19.119.091V24l-5.785-3.106ZM1.8 13.551v7.343l5.633 2.949v-6.988L1.8 13.551Z"
-      />
-    </svg>
-  );
-}
-
 function Counter({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: "good" | "bad" }) {
   return (
     <div className="counter">
@@ -58,7 +43,9 @@ export function Header({ snap, connected, stalled, soundOn, onSound }: { snap: S
   const t = snap?.totals;
   const jev = snap?.jev;
   const who = chooserShort(snap);
-  const onCode = jev?.provider === "code";
+  const onRules = jev?.engine === "rules";
+  const onCode = jev?.provider === "code" || onRules;
+  const pf = snap?.portfolio;
   // The configured chooser is not proof of who decided: say so whenever the code chooser has been standing in.
   const recentFallback = jev?.lastFallback && snap && snap.ts - jev.lastFallback.at < 15 * 60_000 ? jev.lastFallback : null;
   const standIn = !onCode && (jev?.down || jev?.capTripped || jev?.budgetRefused || !!recentFallback);
@@ -69,28 +56,36 @@ export function Header({ snap, connected, stalled, soundOn, onSound }: { snap: S
     <header className="top">
       <div className="brand">
         <div className="brand-row">
-          <div className="logo">beebots</div>
+          <div className="logo">waspbot</div>
+          <ControlsButton halted={pf?.halted?.reason ?? null} />
           <HiveButton />
         </div>
         <div className="brand-sub">
           <span className={`mode mode-${snap?.mode ?? "dry"}`}>{snap?.mode === "live" ? "● LIVE MONEY" : snap?.mode === "demo" ? "OKX DEMO" : "PAPER TRADING"}{snap?.closed ? (snap.closed.flat ? " · ENDED" : " · CLOSING") : ""}</span>
           {snap?.update ? (
-            <a className="update-pill" href={`${PROFILE.links?.code ?? "https://github.com/imikerussell/beebots"}/releases/latest`} target="_blank" rel="noopener" title={`You run ${snap.update.current}. See what's new and how to update.`}>
+            <a className="update-pill" href={`${PROFILE.links?.code || "https://github.com/AugisKo/waspbot"}/releases/latest`} target="_blank" rel="noopener" title={`You run ${snap.update.current}. See what's new and how to update.`}>
               Update available: {snap.update.latest} ↗
             </a>
           ) : null}
           <span className="dim">
-            day {day} · 3 bees · OKX X-Perps · not financial advice
+            day {day} · 3 wasps · OKX X-Perps · not financial advice
           </span>
-          {jev?.provider === "gemini" && (
-            <a className="powered" href="https://ai.google.dev/gemini-api/docs" target="_blank" rel="noopener" title={`The configured chooser is ${jev.fullName ?? "Gemini"}. Each call in the decision stream says who made it: CODE marks the code chooser standing in.`}>
-              <img src="/gemini.svg" alt="" width="16" height="16" />
+          {onRules ? (
+            <span className="powered" title="The rules engine decides: deterministic code, no model, nothing spent. Switch it in Controls.">
               <span>
-                Powered by <b>{jev.fullName ?? "Gemini"}</b>
+                Decided by <b>the rules engine</b>
+              </span>
+            </span>
+          ) : jev?.provider && jev.provider !== "code" ? (
+            <span className="powered" title={`The configured chooser is ${jev.fullName ?? who}. Each call in the decision stream says who made it: CODE marks the code chooser standing in.`}>
+              {jev.provider === "gemini" && <img src="/gemini.svg" alt="" width="16" height="16" />}
+              <span>
+                Decided by <b>{jev.fullName ?? who}</b>
                 {standIn ? " · code standing in" : ""}
               </span>
-            </a>
-          )}
+            </span>
+          ) : null}
+          {pf?.halted && <span className="mode mode-live" title={pf.halted.reason}>PORTFOLIO HALTED</span>}
         </div>
       </div>
 
@@ -107,7 +102,9 @@ export function Header({ snap, connected, stalled, soundOn, onSound }: { snap: S
           label="Decisions"
           value={decisions.toLocaleString()}
           sub={
-            onCode
+            onRules
+              ? "rules engine: code decides"
+              : onCode
               ? "no model key: code decides"
               : jev?.down
                 ? `${who} offline: code decides`
@@ -121,15 +118,22 @@ export function Header({ snap, connected, stalled, soundOn, onSound }: { snap: S
           }
           tone={standIn ? "bad" : undefined}
         />
+        <Counter
+          label="Net exposure"
+          value={pf ? signed(pf.netUsd) : "–"}
+          sub={pf ? `limit ±${money(pf.netLimitUsd, 0)} · peak ${money(pf.peakUsd, 0)}` : undefined}
+          tone={pf?.halted ? "bad" : undefined}
+        />
         <Counter label="Visitors" value={snap?.visitors ? snap.visitors.total.toLocaleString() : "–"} sub={snap?.visitors ? `${snap.visitors.watching} watching now` : undefined} />
-        <a className="counter host" href={PROFILE.links?.sponsor ?? "https://mrc.fm/beebots"} target="_blank" rel="noopener">
-          <div className="eyebrow">Hosted on</div>
-          <div className="host-row">
-            <HostingerMark />
-            <span>Hostinger</span>
-          </div>
-          <div className="counter-sub">Host your own ↗</div>
-        </a>
+        {PROFILE.links?.code ? (
+          <a className="counter host" href={PROFILE.links.code} target="_blank" rel="noopener">
+            <div className="eyebrow">Open source</div>
+            <div className="host-row">
+              <span>Get the code</span>
+            </div>
+            <div className="counter-sub">MIT licence ↗</div>
+          </a>
+        ) : null}
       </div>
 
       <div className="top-right">

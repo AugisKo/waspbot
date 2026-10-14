@@ -1,8 +1,8 @@
 {
-  "name": "beebots",
+  "name": "waspbot",
   "version": "2026.10.14",
   "private": true,
-  "description": "Three AI trading bees on OKX EEA X-Perps, picked by Gemini 4 Argon or Jev with a code fallback",
+  "description": "Three trading wasps on OKX EEA X-Perps: a rules engine or a model (Gemini, Claude, OpenAI, Jev) decides, a risk layer in code says yes or no, a news/knowledge layer can only make them more careful. Paper trading by default.",
   "type": "module",
   "engines": {
     "node": ">=22.13"

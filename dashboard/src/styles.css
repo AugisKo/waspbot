@@ -14,7 +14,7 @@
   --axis: #45434f;
   --muted-bar: #3a3946;
 
-  /* Bee identity (validated dark categorical steps: yellow, violet, magenta; all-pairs CVD ΔE >= 13) */
+  /* Wasp slot identity (validated dark categorical steps: yellow, violet, magenta; all-pairs CVD ΔE >= 13) */
   --bizzy: #c98500;
   --breezy: #9085e9;
   --boozy: #d55181;
@@ -1967,4 +1967,97 @@ textarea.setup-input {
 .keeper-undo {
   margin-left: 0.5rem;
   color: #ff9a66;
+}
+
+/* ---------- Controls dialog ---------- */
+.modal-wide {
+  width: min(46rem, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+.modal h3 {
+  margin: 1.1rem 0 0.4rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.small {
+  font-size: 0.82em;
+}
+.ctl-row {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+  padding: 0.35rem 0;
+  cursor: pointer;
+}
+.ctl-row input {
+  margin-top: 0.2rem;
+  accent-color: var(--bizzy);
+}
+.ctl-row.off {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.ctl-seg {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  overflow: hidden;
+  margin: 0.2rem 0 0.4rem;
+}
+.ctl-seg button {
+  background: transparent;
+  color: var(--text-2);
+  border: 0;
+  padding: 0.45rem 0.9rem;
+  font: inherit;
+  cursor: pointer;
+}
+.ctl-seg button + button {
+  border-left: 1px solid var(--line);
+}
+.ctl-seg button.on {
+  background: var(--card-2);
+  color: var(--text);
+  font-weight: 600;
+}
+.ctl-seg button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.ctl-halt {
+  display: flex;
+  gap: 0.8rem;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid var(--critical);
+  border-radius: 0.6rem;
+  padding: 0.6rem 0.8rem;
+  margin-bottom: 0.6rem;
+}
+.ctl-know {
+  margin-top: 0.8rem;
+}
+.ctl-know summary {
+  cursor: pointer;
+  color: var(--text-2);
+}
+.ctl-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0;
+  font-size: 0.85em;
+}
+.ctl-list li {
+  padding: 0.2rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.ctl-list a {
+  color: var(--text);
+}
+.hive-btn.alert {
+  border-color: var(--critical);
+  color: var(--critical-text);
 }

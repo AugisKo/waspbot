@@ -8,7 +8,7 @@ import { BEE_META, PROFILE, type BeeName, type KeeperEntry, type KeeperState } f
 
 /** The shared Zap: anyone can copy it and point it at their own hive. */
 export const KEEPER_ZAP_URL = "https://mrc.fm/beekeeper";
-const REPO = "https://github.com/imikerussell/beebots";
+const REPO = "https://github.com/AugisKo/waspbot";
 
 /** Claude mark: path from Simple Icons (slug "claude", CC0 path data). Brand colour #D97757. */
 function ClaudeMark() {
@@ -62,7 +62,7 @@ function Who({ bee, big }: { bee: BeeName | null; big?: boolean }) {
       className={`keeper-who ${big ? "big" : ""} ${meta ? "" : "nobody"}`}
       src={meta ? meta.img : "/keeper.svg"}
       alt={meta ? meta.title : "nobody"}
-      title={meta ? meta.title : "No bee was rewritten"}
+      title={meta ? meta.title : "No wasp was rewritten"}
       style={meta ? { ["--bee" as string]: meta.color } : undefined}
     />
   );
@@ -169,7 +169,7 @@ export function Beekeeper({ keeper }: { keeper: KeeperState | undefined }) {
         <div className="keeper-title">
           <span className="eyebrow keeper-eyebrow">The Beekeeper</span>
           <span className="keeper-sub dim">
-            {k.on ? `checks all three bees every ${k.everyHours} h · ${k.rewrites} ${k.rewrites === 1 ? "rewrite" : "rewrites"} so far` : "rewrites a bee's rules when they stop working"}
+            {k.on ? `checks all three wasps every ${k.everyHours} h · ${k.rewrites} ${k.rewrites === 1 ? "rewrite" : "rewrites"} so far` : "rewrites a wasp's rules when they stop working"}
           </span>
         </div>
         {k.on && k.nextRoundAt !== null && (

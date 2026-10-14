@@ -66,14 +66,14 @@ describe("effective-config tool", () => {
     const jev = diffConfig(effectiveConfig(composeEnv({ TYPESAFE_API_KEY: "jev-key" })), intended).map((x) => x.knob);
     expect(jev).toEqual(expect.arrayContaining(["chooser.provider", "chooser.model"]));
     const none = diffConfig(effectiveConfig(composeEnv({})), intended).map((x) => x.knob);
-    expect(none).toEqual(["chooser.provider", "chooser.apiKeyPresent"]);
+    expect(none.sort()).toEqual(["chooser.apiKeyPresent", "chooser.model", "chooser.provider"]);
   });
 
   it(".env.example, copied as is, sets exactly Argon's knobs (it pins every knob it lists)", () => {
     const example = parseEnv(readFileSync(new URL("../.env.example", import.meta.url), "utf8"));
     const diffs = diffConfig(effectiveConfig(composeEnv(example)), intended).map((d) => d.knob);
-    // Only the key is missing from the example; every knob it pins matches.
-    expect(diffs).toEqual(["chooser.provider", "chooser.apiKeyPresent"]);
+    // Only the key is missing from the example (so the code chooser shows); every knob it pins matches.
+    expect(diffs.sort()).toEqual(["chooser.apiKeyPresent", "chooser.model", "chooser.provider"]);
     expect(diffConfig(effectiveConfig(composeEnv({ ...example, GEMINI_API_KEY: SECRETS.GEMINI_API_KEY })), intended)).toEqual([]);
   });
 
