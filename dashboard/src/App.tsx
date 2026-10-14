@@ -5,7 +5,7 @@ import { Header } from "./Header";
 import { unlockAudio } from "./sound";
 import { Ticker } from "./Ticker";
 import { Toasts } from "./Toasts";
-import { BEE_META, BEE_NAMES } from "./types";
+import { BEE_META, BEE_NAMES, chooserShort } from "./types";
 import { useFeed } from "./useFeed";
 
 function readSoundPref(): boolean {
@@ -67,6 +67,7 @@ export function App() {
               rank={board.indexOf(name) + 1}
               gap={bee ? Math.max(0, leaderEq - bee.equityUsd) : null}
               flash={feed.flashes[name]}
+              chooser={chooserShort(feed.snap)}
             />
           );
         })}
@@ -93,7 +94,7 @@ export function App() {
               );
             })}
           </section>
-          <Ticker decisions={feed.decisions} perMin={feed.decisionTimes.length} />
+          <Ticker decisions={feed.decisions} perMin={feed.decisionTimes.length} chooser={chooserShort(feed.snap)} />
           {blocked.length > 0 && (
             <section className="rail-card blocked">
               <span className="eyebrow">Spread gate says no</span>

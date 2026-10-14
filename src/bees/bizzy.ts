@@ -1,10 +1,12 @@
-// bizzy-bee. Since 2026-09-24: one Larry Williams volatility breakout a day.
-// The fade helpers below are her previous strategy (Z1), kept for reference and tests; the brain no longer uses them.
+// bizzy-bee: the grinder. Dual-engine intraday Bollinger+RSI mean reversion (long & short)
+// plus confirmed Larry Williams breakouts on liquid majors, at 1x equity (0.5 maxNotional),
+// with a 4h time stop and neverForce.
 import type { CoinStats } from "../market/types.js";
-import { r2 } from "./common.js";
+import { atrStop, minutesSince, r2 } from "./common.js";
 import type { BeeBrain, BeeContext, Menu, Side } from "./types.js";
 
 export const FUNDING_Z_BLOCK_LONG = 1.5;
+export const FUNDING_Z_BLOCK_SHORT = -1.5;
 
 export interface FadeSetup {
   instId: string;
@@ -15,16 +17,21 @@ export interface FadeSetup {
   stretch: number;
 }
 
-/** Strict BbandRsi setups (mirrored), with the funding veto on longs. */
+/** Strict BbandRsi setups (mirrored), with funding vetoes on crowded sides. */
 export function fadeSetup(s: CoinStats): FadeSetup | null {
   if (s.rsi14 === null || s.pctB === null) return null;
   const longBlocked = s.fundingZ !== null && s.fundingZ > FUNDING_Z_BLOCK_LONG;
-  if (s.rsi14 < 30 && s.pctB < 0 && !longBlocked) return { instId: s.instId, coin: s.coin, side: "long", strict: true, stretch: Math.abs(s.pctB - 0.5) };
-  if (s.rsi14 > 70 && s.pctB > 1) return { instId: s.instId, coin: s.coin, side: "short", strict: true, stretch: Math.abs(s.pctB - 0.5) };
+  const shortBlocked = s.fundingZ !== null && s.fundingZ < FUNDING_Z_BLOCK_SHORT;
+  if (s.rsi14 < 30 && s.pctB < 0 && !longBlocked) {
+    return { instId: s.instId, coin: s.coin, side: "long", strict: true, stretch: Math.abs(s.pctB - 0.5) };
+  }
+  if (s.rsi14 > 70 && s.pctB > 1 && !shortBlocked) {
+    return { instId: s.instId, coin: s.coin, side: "short", strict: true, stretch: Math.abs(s.pctB - 0.5) };
+  }
   return null;
 }
 
-/** The most stretched coins by %B, as loose fades (the side is toward the middle band). */
+/** The most stretched coins by %B, as loose fades (kept for reference and tests). */
 export function stretchedFades(stats: CoinStats[], n: number): FadeSetup[] {
   return stats
     .filter((s) => s.pctB !== null)
@@ -37,41 +44,64 @@ export function stretchedFades(stats: CoinStats[], n: number): FadeSetup[] {
     .slice(0, n);
 }
 
-/** The breakout coins, in order of preference when several trigger on the same tick. */
-export const BIZZY_BREAKOUT_COINS = ["BTC", "ETH", "SOL", "HYPE"] as const;
+/** The breakout-eligible majors, also used by lab/brain.ts STYLE_COINS. */
+export const BIZZY_BREAKOUT_COINS = ["BTC", "ETH", "SOL", "HYPE", "XRP", "SUI", "DOGE", "LINK"] as const;
+const CORE_BREAKOUT_MAJORS = new Set(["BTC", "ETH", "SOL", "HYPE"]);
 
-function breakoutStats(ctx: BeeContext): CoinStats[] {
-  const byCoin = new Map([...ctx.view.stats.values()].map((s) => [s.coin, s]));
-  return BIZZY_BREAKOUT_COINS.map((c) => byCoin.get(c)).filter((s): s is CoinStats => !!s && !!s.breakout && s.spreadBp <= ctx.knobs.spreadGateBps);
+function liquidPool(ctx: BeeContext): CoinStats[] {
+  return [...ctx.view.stats.values()]
+    .filter((s) => s.spreadBp <= ctx.knobs.spreadGateBps && (BIZZY_BREAKOUT_COINS as readonly string[]).includes(s.coin))
+    .sort((a, b) => b.vol24hUsd - a.vol24hUsd)
+    .slice(0, ctx.cfg.bizzy.universeSize);
 }
 
 /** % the price still needs to rise to reach today's trigger (negative = already through it). */
 const toTrigger = (s: CoinStats) => (s.breakout ? ((s.breakout.trigger - s.mid) / s.mid) * 100 : null);
 
-const nextUtcMidnight = (ms: number) => (Math.floor(ms / 86_400_000) + 1) * 86_400_000;
+/** Confirmed breakout: through trigger on a core major, with non-negative 1h return and uncrowded funding. */
+function isConfirmedBreakout(s: CoinStats): boolean {
+  if (!CORE_BREAKOUT_MAJORS.has(s.coin) || !s.breakout) return false;
+  const t = toTrigger(s);
+  if (t === null || t > 0) return false;
+  if ((s.fundingZ ?? 0) > FUNDING_Z_BLOCK_LONG) return false;
+  if ((s.ret1hPct ?? 0) < 0) return false;
+  if ((s.rsi14 ?? 55) > 78) return false;
+  return true;
+}
+
+/** CUT_LOSS is offered only after this many minutes in the trade... */
+export const BIZZY_CUT_LOSS_MIN_HOLD_MIN = 20;
+/** ...or earlier once the trade is a real loser, at this many R or worse. */
+export const BIZZY_CUT_LOSS_EARLY_R = -0.5;
+
+export const BIZZY_PROFIT_LOCK = [
+  { atPct: 1.2, keep: 0.5 },
+  { atPct: 2.5, keep: 0.7 },
+] as const;
 
 export const bizzy: BeeBrain = {
   id: "bizzy",
-  strategy:
-    "You are bizzy-bee, the grinder, now a one-shot breakout hunter. Each UTC day you get ONE trade: when BTC, ETH, SOL or HYPE breaks above today's open plus half of yesterday's range, you may go long at full size and ride it to the end of the day. Only take a breakout that looks real. While holding, HOLD unless it is clearly failing.",
-  convictionLabels: ["meh", "decent", "juicy", "screaming"],
   neverForce: true,
-  // Ride to the UTC day close (1 minute before midnight).
-  timeStopMinutes: (ctx) => {
-    const p = ctx.bee.position;
-    return p ? Math.max(1, (nextUtcMidnight(p.openedAt) - 60_000 - p.openedAt) / 60_000) : Number.POSITIVE_INFINITY;
-  },
+  requiresStrictSetup: true,
+  fundingVetoLongZ: FUNDING_Z_BLOCK_LONG,
+  profitLock: BIZZY_PROFIT_LOCK,
+  timeStopMinutes: (ctx) => ctx.cfg.bizzy.timeStopMinutes,
+  strategy:
+    "You are bizzy-bee, the grinder. Trade high-probability intraday Bollinger+RSI mean-reversion fades (FADE_LONG when RSI<30 & %B<0, FADE_SHORT when RSI>70 & %B>1) and confirmed daily volatility breakouts (BREAKOUT_<coin>) on liquid majors at 1x equity. Bank profits quickly at the middle band or +1R, cut losers early, and wait flat when no strict setup is live.",
+  convictionLabels: ["meh", "decent", "juicy", "screaming"],
 
   idleStatus(ctx) {
-    const next = breakoutStats(ctx)
+    const pool = liquidPool(ctx);
+    const nearBreak = pool
+      .filter((s) => CORE_BREAKOUT_MAJORS.has(s.coin) && s.breakout)
       .map((s) => ({ coin: s.coin, pct: toTrigger(s) }))
       .filter((x): x is { coin: string; pct: number } => x.pct !== null)
       .sort((a, b) => a.pct - b.pct)[0];
-    return next ? `${next.coin} is ${next.pct.toFixed(2)}% from breakout` : "waiting for today's breakout levels";
+    return nearBreak ? `${nearBreak.coin} is ${nearBreak.pct.toFixed(2)}% from breakout` : "scanning for strict band fade or breakout";
   },
 
   universe(ctx) {
-    return breakoutStats(ctx).map((s) => s.instId);
+    return liquidPool(ctx).map((s) => s.instId);
   },
 
   snapshotCoins(ctx) {
@@ -82,9 +112,9 @@ export const bizzy: BeeBrain = {
 
   coinSnapshot(s) {
     return {
+      rsi14: r2(s.rsi14, 0),
+      pct_b: r2(s.pctB, 2),
       to_trigger_pct: r2(toTrigger(s)),
-      day_move_pct: s.breakout ? r2(((s.mid - s.breakout.dayOpen) / s.breakout.dayOpen) * 100) : null,
-      prev_range_pct: s.breakout ? r2((s.breakout.prevRange / s.breakout.dayOpen) * 100) : null,
       r1h_pct: r2(s.ret1hPct, 1),
       fund_z: r2(s.fundingZ, 1),
       oi1h_pct: r2(s.oiChg1hPct, 1),
@@ -95,17 +125,56 @@ export const bizzy: BeeBrain = {
   menu(ctx) {
     const m: Menu = {};
     const p = ctx.bee.position;
+    const sizeFrac = ctx.cfg.bizzy.sizeFraction;
+
     if (!p) {
-      // Only coins that are through their trigger right now. Nothing triggered = no question for Jev (saves spend).
-      for (const s of breakoutStats(ctx)) {
-        const t = toTrigger(s);
-        if (t !== null && t <= 0) m[`BREAKOUT_${s.coin}`] = { desc: `through trigger by ${(-t).toFixed(2)}%`, intent: { kind: "open", instId: s.instId, side: "long", sizeFrac: 1, setup: "strict" } };
+      const pool = liquidPool(ctx);
+      // 1. Strict Bollinger + RSI fades (long or short).
+      const fades = pool
+        .map((s) => fadeSetup(s))
+        .filter((f): f is FadeSetup => f !== null)
+        .sort((a, b) => b.stretch - a.stretch);
+      for (const f of fades) {
+        m[`FADE_${f.side.toUpperCase()}_${f.coin}`] = {
+          desc: `${f.side} fade (stretch ${f.stretch.toFixed(2)})`,
+          intent: { kind: "open", instId: f.instId, side: f.side, sizeFrac, setup: "strict" },
+        };
       }
-      if (Object.keys(m).length) m.WAIT = { desc: "not convinced, keep waiting", intent: { kind: "hold" } };
+      // 2. Confirmed Larry Williams breakouts on core majors.
+      for (const s of pool) {
+        if (isConfirmedBreakout(s)) {
+          const t = toTrigger(s)!;
+          m[`BREAKOUT_${s.coin}`] = {
+            desc: `through trigger by ${(-t).toFixed(2)}%`,
+            intent: { kind: "open", instId: s.instId, side: "long", sizeFrac, setup: "strict" },
+          };
+        }
+      }
+      if (Object.keys(m).length > 0) {
+        m.WAIT = { desc: "not convinced, keep waiting", intent: { kind: "hold" } };
+      }
       return m;
     }
-    m.HOLD = { desc: "ride it to the day close", intent: { kind: "hold" } };
-    if (ctx.bee.uplUsd < 0) m.CUT_LOSS = { desc: "breakout failing, close", intent: { kind: "close", reason: "cut_loss" } };
+
+    const s = ctx.view.stats.get(p.instId);
+    m.HOLD = { desc: "hold position", intent: { kind: "hold" } };
+
+    // Take profit at Bollinger middle band or >= +1.0R.
+    const reachedMid =
+      s &&
+      ((p.side === "long" && ((s.bbMid !== null && s.mid >= s.bbMid && ctx.bee.uplUsd > 0) || (s.pctB !== null && s.pctB >= 0.5 && ctx.bee.uplUsd > 0))) ||
+        (p.side === "short" && ((s.bbMid !== null && s.mid <= s.bbMid && ctx.bee.uplUsd > 0) || (s.pctB !== null && s.pctB <= 0.5 && ctx.bee.uplUsd > 0))));
+    if (reachedMid || (ctx.uplR ?? 0) >= 1.0) {
+      m.TAKE_PROFIT = { desc: "bank target at mid-band / +1R", intent: { kind: "close", reason: "take_profit" } };
+    }
+
+    // "Cut losers when underwater", but not the spread: any entry is red at once, so CUT_LOSS waits until the trade
+    // has had BIZZY_CUT_LOSS_MIN_HOLD_MIN minutes, unless it is a real loser already (uplR <= BIZZY_CUT_LOSS_EARLY_R).
+    // The hard stop and the 4h time stop are unchanged and never wait.
+    const heldMin = minutesSince(p.openedAt, ctx.now);
+    if (ctx.bee.uplUsd < 0 && (heldMin >= BIZZY_CUT_LOSS_MIN_HOLD_MIN || (ctx.uplR ?? 0) <= BIZZY_CUT_LOSS_EARLY_R)) {
+      m.CUT_LOSS = { desc: "setup failing, cut loss", intent: { kind: "close", reason: "cut_loss" } };
+    }
     return m;
   },
 
@@ -117,10 +186,13 @@ export const bizzy: BeeBrain = {
     return intent.sizeFrac;
   },
 
-  stopFor(instId, side, _entryPx, ctx) {
-    // Failed breakout: back below today's open.
-    const b = ctx.view.stats.get(instId)?.breakout;
-    if (!b) return null;
-    return side === "long" ? b.dayOpen : null;
+  stopFor(instId, side, entryPx, ctx) {
+    const s = ctx.view.stats.get(instId);
+    const atr = atrStop(s, side, entryPx, ctx.knobs.stopAtrMult);
+    // If opened on a daily breakout and dayOpen is below entryPx, honour dayOpen when atrStop is unavailable.
+    if (side === "long" && s?.breakout && s.breakout.dayOpen < entryPx) {
+      return atr !== null ? Math.max(s.breakout.dayOpen, atr) : s.breakout.dayOpen;
+    }
+    return atr;
   },
 };

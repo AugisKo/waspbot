@@ -34,8 +34,13 @@ export function EquityChart({ curve, color, baseline, gradientId }: Props) {
     const pts = curve.length === 1 ? [[curve[0]![0] - 1000, curve[0]![1]] as [number, number], curve[0]!] : curve;
     const t0 = pts[0]![0];
     const t1 = pts[pts.length - 1]![0];
-    let lo = Math.min(baseline, ...pts.map((p) => p[1]));
-    let hi = Math.max(baseline, ...pts.map((p) => p[1]));
+    // A loop, not Math.min(...pts): spreading 138k points overflows the call stack and blanks the page.
+    let lo = baseline;
+    let hi = baseline;
+    for (const p of pts) {
+      if (p[1] < lo) lo = p[1];
+      if (p[1] > hi) hi = p[1];
+    }
     // Never zoom in tighter than ±1% of the stake, so cents of noise do not look like cliffs.
     const pad = Math.max((hi - lo) * 0.15, baseline * 0.01);
     lo -= pad;

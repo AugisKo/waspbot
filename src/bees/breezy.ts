@@ -1,13 +1,15 @@
-// breezy-bee: ensemble Donchian trend following on BTC + ETH, 4h bars. See strategies/BREEZY_BEE.md.
+// breezy-bee: ensemble Donchian trend following on BTC + ETH, 4h bars.
+// Gated at |score| >= 3 (stays flat in chop), sized proportionally under a 40% vol cap
+// with no forced 1x floor, safe realised-cash rebalance, and neverForce.
 import type { CoinStats } from "../market/types.js";
-import { maxNotionalUsd, positionNotional, r2 } from "./common.js";
+import { MARGIN_HEADROOM, maxNotionalUsd, positionNotional, r2 } from "./common.js";
 import type { BeeBrain, BeeContext, Intent, Menu, Side } from "./types.js";
 
 export const BREEZY_COINS = ["BTC", "ETH"] as const;
-/** Vol cap (annualised %). Raised from the paper's 25% to 60% for visible swings (research 2026-09-24). */
-const VOL_TARGET_PCT = 60;
-/** Never below this fraction of max notional (1x equity at the 2x cap). */
-const SIZE_FLOOR_FRAC = 0.5;
+/** Minimum |score| (out of 9 slices) required to open or hold a trend position. */
+export const BREEZY_MIN_SCORE = 3;
+/** Annualised vol target (%) used to cap position size. */
+const VOL_TARGET_PCT = 40;
 
 function coinStats(ctx: BeeContext): CoinStats[] {
   return [...ctx.view.stats.values()].filter((s) => (BREEZY_COINS as readonly string[]).includes(s.coin) && s.trend);
@@ -15,10 +17,26 @@ function coinStats(ctx: BeeContext): CoinStats[] {
 
 const sideOf = (score: number): Side => (score >= 0 ? "long" : "short");
 
-/** max(0.5, |score|/9) of max notional, capped so the position stays under 60% annualised vol. */
+/** Realised-collateral ceiling so unrealised profits never trigger OKX 51008 margin rejections on adds. */
+function usableMaxNotional(ctx: BeeContext): number {
+  const collateralUsd = Math.max(0, Math.min(ctx.bee.equityUsd, ctx.bee.cashUsd));
+  return Math.max(0, Math.min(ctx.cfg.risk.maxLeverage * collateralUsd * MARGIN_HEADROOM, maxNotionalUsd(ctx)));
+}
+
+/** True when 4h Donchian score is at least BREEZY_MIN_SCORE and 24h return does not fight the trend. */
+export function hasQualifiedTrend(s: CoinStats | undefined): boolean {
+  if (!s?.trend) return false;
+  const { score } = s.trend;
+  if (Math.abs(score) < BREEZY_MIN_SCORE) return false;
+  if (Math.abs(score) >= 5) return true;
+  const r24 = s.ret24hPct ?? 0;
+  return score > 0 ? r24 >= -1.0 : r24 <= 1.0;
+}
+
+/** (|score|/9) of max notional when |score| >= 3 (0 in chop), capped by the 40% annualised vol limit. */
 export function breezySizeFrac(s: CoinStats | undefined, ctx: BeeContext): number {
-  if (!s?.trend) return 0;
-  const byScore = Math.max(SIZE_FLOOR_FRAC, Math.abs(s.trend.score) / 9);
+  if (!s?.trend || Math.abs(s.trend.score) < BREEZY_MIN_SCORE) return 0;
+  const byScore = Math.abs(s.trend.score) / 9;
   const max = maxNotionalUsd(ctx);
   const rv = s.trend.rv90Pct;
   const volCap = rv && rv > 0 && max > 0 ? (ctx.bee.equityUsd * (VOL_TARGET_PCT / rv)) / max : 1;
@@ -35,12 +53,26 @@ export function strongerCoin(stats: CoinStats[]): CoinStats | undefined {
   })[0];
 }
 
+export const BREEZY_PROFIT_LOCK = [
+  { atPct: 2.0, keep: 0.45 },
+  { atPct: 4.0, keep: 0.65 },
+] as const;
+
 export const breezy: BeeBrain = {
   id: "breezy",
+  neverForce: true,
+  requiresStrictSetup: true,
+  profitLock: BREEZY_PROFIT_LOCK,
+  protectAdds: true,
   strategy:
-    "You are breezy-bee, the calculated one. Trend following on BTC and ETH with a 9-slice Donchian ensemble on 4h bars (score -9..+9: long slices on minus short slices on). Ride winners, trade rarely, stay positioned with a real position (at least 1x equity). The code keeps your position at its target size. Open or flip only on a strong, clear trend; otherwise hold. Add only to a winner above +1R. Trim half when the score has fallen by 3 or more.",
+    "You are breezy-bee, the calculated one. Trend following on BTC and ETH with a 9-slice Donchian ensemble on 4h bars (score -9..+9). Only enter when |score| >= 3 and the trend is clear; stay flat in chop. Ride winners with trailing stops, add only above +1R, trim half if score drops by 3+, and close if the trend score disappears.",
   convictionLabels: ["weak", "fair", "strong", "overwhelming"],
-  openGate: { minConviction: 2, minProb: (ctx) => ctx.cfg.breezy.minOpenProb },
+  openGate: { minConviction: 1, minProb: (ctx) => ctx.cfg.breezy.minOpenProb },
+
+  idleStatus(ctx) {
+    const top = strongerCoin(coinStats(ctx));
+    return top ? `flat: ${top.coin} score ${top.trend!.score}/9 (needs |score| >= ${BREEZY_MIN_SCORE})` : "waiting for 4h Donchian trend";
+  },
 
   universe(ctx) {
     return coinStats(ctx)
@@ -69,7 +101,7 @@ export const breezy: BeeBrain = {
   },
 
   menu(ctx) {
-    const stats = coinStats(ctx);
+    const stats = coinStats(ctx).filter((s) => s.spreadBp <= ctx.knobs.spreadGateBps);
     const m: Menu = {};
     const p = ctx.bee.position;
     const open = (s: CoinStats, side: Side, kind: "open" | "switch"): Intent => ({
@@ -77,63 +109,83 @@ export const breezy: BeeBrain = {
       instId: s.instId,
       side,
       sizeFrac: breezySizeFrac(s, ctx),
-      setup: Math.sign(s.trend!.score) === (side === "long" ? 1 : -1) ? "strict" : "loose",
+      setup: "strict",
     });
+
     if (!p) {
-      for (const s of stats)
-        for (const side of ["long", "short"] as const)
-          m[`${side.toUpperCase()}_${s.coin}`] = { desc: null, intent: open(s, side, "open") };
+      // Sort so the stronger qualified trend appears first on the menu.
+      const ordered = [...stats].sort((a, b) => Math.abs(b.trend!.score) - Math.abs(a.trend!.score));
+      for (const s of ordered) {
+        if (!hasQualifiedTrend(s)) continue;
+        const side = sideOf(s.trend!.score);
+        m[`${side.toUpperCase()}_${s.coin}`] = {
+          desc: `score ${s.trend!.score}/9`,
+          intent: open(s, side, "open"),
+        };
+      }
+      if (Object.keys(m).length > 0) {
+        m.WAIT = { desc: "hold cash, wait for stronger trend", intent: { kind: "hold" } };
+      }
       return m;
     }
-    const cur = stats.find((s) => s.instId === p.instId);
+
+    const cur = coinStats(ctx).find((s) => s.instId === p.instId);
     const inst = ctx.view.instruments.get(p.instId);
     m.HOLD_WINNER = { desc: "keep position", intent: { kind: "hold" } };
+
+    const dir = p.side === "long" ? 1 : -1;
     const notional = cur && inst ? positionNotional(p, cur.mid, inst.ctVal) : 0;
-    // Rebalance up only when the position is more than 25% of max notional below target (few, meaningful trades).
-    if ((ctx.uplR ?? 0) > 1 && notional < maxNotionalUsd(ctx) * 0.95) {
+    const usableMax = usableMaxNotional(ctx);
+
+    if ((ctx.uplR ?? 0) > 1 && cur?.trend && dir * cur.trend.score >= BREEZY_MIN_SCORE && notional < usableMax * 0.85) {
       m.ADD_TO_WINNER = { desc: "add one slice", intent: { kind: "add", sizeFrac: 1 / 9 } };
     }
-    if (cur?.trend && p.entryScore !== undefined) {
-      const dir = p.side === "long" ? 1 : -1;
-      if (dir * cur.trend.score <= dir * p.entryScore - 3) m.TRIM_HALF = { desc: "take half off", intent: { kind: "trim", fraction: 0.5 } };
+
+    if (cur?.trend && p.entryScore !== undefined && dir * cur.trend.score <= dir * p.entryScore - 3) {
+      m.TRIM_HALF = { desc: "take half off", intent: { kind: "trim", fraction: 0.5 } };
     }
-    if (cur) {
+
+    if (cur?.trend && dir * cur.trend.score <= 0) {
+      m.CLOSE_TREND = { desc: "trend exhausted, exit to cash", intent: { kind: "close", reason: "trend_exhausted" } };
+    }
+
+    // Offer a direct flip or switch only when an opposing trend is strongly established (|score| >= 5).
+    if (cur?.trend && -dir * cur.trend.score >= 5 && hasQualifiedTrend(cur)) {
       const flip: Side = p.side === "long" ? "short" : "long";
-      m[`${flip.toUpperCase()}_${cur.coin}`] = { desc: null, intent: open(cur, flip, "switch") };
+      m[`${flip.toUpperCase()}_${cur.coin}`] = { desc: `flip on score ${cur.trend.score}/9`, intent: open(cur, flip, "switch") };
     }
+
     const other = stats.find((s) => s.instId !== p.instId);
-    if (other && other.trend!.score !== 0) {
-      const side = sideOf(other.trend!.score);
+    if (other?.trend && hasQualifiedTrend(other) && Math.abs(other.trend.score) >= 5 && Math.abs(other.trend.score) >= Math.abs(cur?.trend?.score ?? 0) + 3) {
+      const side = sideOf(other.trend.score);
       m.SWITCH = { desc: `close, go ${side} ${other.coin}`, intent: open(other, side, "switch") };
     }
     return m;
   },
 
   rebalance(ctx) {
-    // More than 25% of max notional below target: add the difference (few, meaningful rebalances).
+    // Only size up a proven winner (uplR > 0.5) when >35% below target against realised cash collateral.
     const p = ctx.bee.position;
     const cur = p ? coinStats(ctx).find((s) => s.instId === p.instId) : undefined;
     const inst = p ? ctx.view.instruments.get(p.instId) : undefined;
-    const max = maxNotionalUsd(ctx);
-    if (!p || !cur || !inst || max <= 0) return null;
-    // Only in the trend's direction: never pile into a position the score has turned against.
-    if ((p.side === "long" ? 1 : -1) * cur.trend!.score < 0) return null;
-    const gap = breezySizeFrac(cur, ctx) * max - positionNotional(p, cur.mid, inst.ctVal);
-    return gap > 0.25 * max ? { kind: "add", sizeFrac: gap / max } : null;
+    const max = usableMaxNotional(ctx);
+    if (!p || !cur?.trend || !inst || max <= 0) return null;
+    if ((ctx.uplR ?? 0) <= 0.5) return null;
+    const dir = p.side === "long" ? 1 : -1;
+    if (dir * cur.trend.score < BREEZY_MIN_SCORE) return null;
+    const targetUsd = breezySizeFrac(cur, ctx) * max;
+    const gap = targetUsd - positionNotional(p, cur.mid, inst.ctVal);
+    return gap > 0.35 * max ? { kind: "add", sizeFrac: gap / max } : null;
   },
 
-  forcedEntry(ctx) {
-    // Never flat: minimum size in the direction of the stronger |score|.
-    const s = strongerCoin(coinStats(ctx).filter((x) => x.spreadBp <= ctx.knobs.spreadGateBps));
-    if (!s) return null;
-    return { kind: "open", instId: s.instId, side: sideOf(s.trend!.score), sizeFrac: breezySizeFrac(s, ctx), setup: "loose" };
+  forcedEntry() {
+    return null;
   },
 
   sizeFrac(intent, _conviction, ctx) {
-    // A sub-strong pick never reaches here with full size: the risk layer turns it into the forced minimum.
     const max = maxNotionalUsd(ctx);
     const minFrac = max > 0 ? ctx.cfg.breezy.minSizeUsd / max : 0;
-    return Math.max(intent.sizeFrac, minFrac);
+    return intent.sizeFrac > 0 ? Math.max(intent.sizeFrac, minFrac) : 0;
   },
 
   stopFor(instId, side, entryPx, ctx) {
@@ -144,7 +196,6 @@ export const breezy: BeeBrain = {
   },
 
   trail(ctx) {
-    // Ratchet with the channel midpoint of the slices pointing our way.
     const p = ctx.bee.position;
     const t = p ? ctx.view.stats.get(p.instId)?.trend : undefined;
     if (!p || !t || t.trailStop === null) return null;

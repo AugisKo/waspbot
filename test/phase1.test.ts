@@ -65,11 +65,11 @@ describe("boozy: a switch needs a confirmed outrank", () => {
   });
 
   it("not offered when the held coin is out of the ranking (spread gate), since there is no fair comparison", () => {
-    const wide = coin("ENA", { ret24hPct: 5, ret7dPct: 20, spreadBp: 27 });
+    const wide = coin("ENA", { ret24hPct: 5, ret7dPct: 20, spreadBp: 27, ret1hPct: -0.4 });
     const c = unlocked({ coin: "SUI", streak: 2 }, [wide, sui]);
     expect(switchTarget(c, rankCandidates(c.view, c.knobs.spreadGateBps))).toBeNull();
     expect(boozy.menu(c).SWITCH_COIN).toBeUndefined();
-    expect(boozy.menu(c).BAIL).toBeDefined(); // bailing stays Jev's call
+    expect(boozy.menu(c).BAIL).toBeDefined(); // the impulse is fading (1h < 0), so bailing stays the chooser's call
   });
 
   it("the streak belongs to one challenger: a different leader starts from zero", () => {

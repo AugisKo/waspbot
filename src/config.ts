@@ -65,6 +65,20 @@ const EnvSchema = z.object({
   DRY_RUN: bool(true),
   MODE: z.enum(["dry", "demo", "live"]).optional().default("dry"),
 
+  // The chooser. With a Gemini key (here or from Setup) it is Gemini 4 Argon; with only a Jev key it is Jev; with neither,
+  // a deterministic code chooser (paper and demo only: MODE=live needs a key). The two keys never mix: a Jev key is never
+  // sent to Google, and JEV_* never become the Gemini model or price.
+  GEMINI_API_KEY: opt,
+  GEMINI_MODEL: str("gemini-4-argon"),
+  GEMINI_TIMEOUT_MS: num(3000),
+  GEMINI_DAILY_USD_CAP: num(3),
+  // Gemini 4 Argon's list price after the launch offer: $4 in / $20 out per million tokens (thinking billed as output).
+  // Pricing the cap at the higher price keeps it safe during the offer too.
+  GEMINI_USD_PER_MTOK: num(4),
+  GEMINI_USD_PER_MTOK_OUT: num(20),
+  // At most one paid call per bee per this many ms, whatever TICK_MS is; in between the bee holds.
+  GEMINI_MIN_INTERVAL_MS: num(60_000),
+  GEMINI_THINKING_LEVEL: opt,
   TYPESAFE_API_KEY: opt,
   JEV_MODEL: str("jev-1.13.0"),
   JEV_TIMEOUT_MS: num(2000),
@@ -83,23 +97,23 @@ const EnvSchema = z.object({
   MAX_NOTIONAL_USD_PER_BEE: num(700),
   DAILY_LOSS_STOP_PCT: num(8),
   BEE_RETIRE_AT_PCT: num(40),
-  MAX_FLAT_MINUTES: num(30),
+  MAX_FLAT_MINUTES: num(1440),
   LIVE_SIZE_MULTIPLIER: num(0.25),
   LIVE_RAMP_HOURS: num(2),
   MIN_24H_VOL_USD: num(1_000_000),
   ALLOW_NON_CRYPTO: bool(false),
   TAKER_FEE_RATE: num(0.0005),
 
-  BREEZY_MIN_OPEN_PROB: num(0.7),
+  BREEZY_MIN_OPEN_PROB: num(0.55),
   BREEZY_MIN_SIZE_USD: num(10),
-  BIZZY_SIZE_FRACTION: num(0.4),
+  BIZZY_SIZE_FRACTION: num(0.5),
   BIZZY_UNIVERSE_SIZE: num(8),
   BIZZY_TIME_STOP_MINUTES: num(240),
   BOOZY_CANDIDATES: num(5),
-  // Defaults = the "wider swings" rules in strategies/*.md (what the original bees ran from 2026-09-24).
-  ...perStyle("BREEZY", { trades: 3, fee: 1.0, spread: 5, cooldown: 240, stopAtr: 2, maxFlat: 0 }),
-  ...perStyle("BIZZY", { trades: 1, fee: 1.0, spread: 5, cooldown: 5, stopAtr: 1.5, maxFlat: 20 }),
-  ...perStyle("BOOZY", { trades: 3, fee: 3.0, spread: 15, cooldown: 2, stopAtr: 2, maxFlat: 0 }),
+  // Defaults = Gemini 4 Argon's rules in strategies/*.md (what the original bees run since 2026-10-13).
+  ...perStyle("BREEZY", { trades: 2, fee: 0.75, spread: 5, cooldown: 240, stopAtr: 2, maxFlat: 1440 }),
+  ...perStyle("BIZZY", { trades: 4, fee: 1.2, spread: 5, cooldown: 30, stopAtr: 2, maxFlat: 1440 }),
+  ...perStyle("BOOZY", { trades: 3, fee: 1.5, spread: 8, cooldown: 60, stopAtr: 2.5, maxFlat: 1440 }),
   ...perSlot("BEE1"),
   ...perSlot("BEE2"),
   ...perSlot("BEE3"),
@@ -157,7 +171,7 @@ export interface BeeKnobs {
   spreadGateBps: number;
   cooldownMinutes: number;
   stopAtrMult: number;
-  /** Effective max flat minutes: min(per-bee, global MAX_FLAT_MINUTES). 0 means "never flat past one tick". */
+  /** Effective max flat minutes: min(per-bee, global MAX_FLAT_MINUTES). */
   maxFlatMinutes: number;
 }
 
@@ -174,7 +188,7 @@ export interface SlotProfile {
   tagline: string;
   /** A portrait generated on Setup lives in the data volume. */
   customImage: boolean;
-  /** The owner's rules (fed to Jev) and coin restriction, from Setup. Empty for the original three. */
+  /** The owner's rules (fed to the chooser) and coin restriction, from Setup. Empty for the original three. */
   rules: string;
   coins: string[];
   /** Made on the Setup page (never shown with the original bees' art). */
@@ -189,7 +203,21 @@ export interface Config {
   hive: { url: string };
   update: { enabled: boolean; repo: string; version: string };
   settingsPath: string;
-  jev: { apiKey: string; model: string; timeoutMs: number; dailyUsdCap: number; usdPerMTok: number };
+  /**
+   * The chooser. `provider` says which model the key is for ("code" = no key, the deterministic code chooser). The name
+   * "jev" stays so the engine, the DB columns and the dashboard keep working.
+   */
+  jev: {
+    provider: ChooserProvider;
+    apiKey: string;
+    model: string;
+    timeoutMs: number;
+    dailyUsdCap: number;
+    usdPerMTok: number;
+    usdPerMTokOut: number;
+    minIntervalMs: number;
+    thinkingLevel?: string;
+  };
   tickMs: number;
   dataRefreshMs: number;
   okx: { site: "eea"; apiBase: string; cliTimeoutMs: number };
@@ -222,6 +250,15 @@ export interface Config {
   lab: { secret?: string };
 }
 
+export type ChooserProvider = "gemini" | "jev" | "code";
+
+/** What the dashboard and the alerts call the chooser: a short name ("Argon") and a full one ("Gemini 4 Argon"). */
+export function chooserName(c: { provider: ChooserProvider; model: string }): { short: string; full: string } {
+  if (c.provider === "jev") return { short: "Jev", full: "Jev" };
+  if (c.provider === "code") return { short: "Code", full: "the code chooser" };
+  return /^gemini-4-argon/.test(c.model) ? { short: "Argon", full: "Gemini 4 Argon" } : { short: "Gemini", full: c.model };
+}
+
 export class ConfigError extends Error {}
 
 /** Parse and validate the environment (plus the Setup file, if any). Throws ConfigError listing NAMES only, never values. */
@@ -234,9 +271,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, settings: Setti
   const e = parsed.data as Record<string, unknown> & z.infer<typeof EnvSchema>;
   const mode: Mode = e.DRY_RUN ? "dry" : e.MODE;
 
+  const geminiKey = e.GEMINI_API_KEY ?? settings?.geminiKey;
   const jevKey = e.TYPESAFE_API_KEY ?? settings?.jevKey;
+  const provider: ChooserProvider = geminiKey ? "gemini" : jevKey ? "jev" : "code";
   const missing: string[] = [];
-  if (!jevKey) missing.push("TYPESAFE_API_KEY");
+  // Paper and demo run on the code chooser when there is no key. Real money is never traded on it alone.
+  if (mode === "live" && provider === "code") missing.push("GEMINI_API_KEY (or TYPESAFE_API_KEY)");
+  if (!(e.GEMINI_DAILY_USD_CAP >= 0)) throw new ConfigError("GEMINI_DAILY_USD_CAP must be >= 0");
+  if (!(e.GEMINI_TIMEOUT_MS > 0)) throw new ConfigError("GEMINI_TIMEOUT_MS must be > 0");
   if (mode === "live" && e.LIVE_ACK !== LIVE_ACK_PHRASE) {
     throw new ConfigError(`MODE=live moves real money. Set LIVE_ACK=${LIVE_ACK_PHRASE} to confirm you accept the risk, or go back to DRY_RUN=true.`);
   }
@@ -298,13 +340,29 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, settings: Setti
     hive: { url: e.HIVE_URL.replace(/\/+$/, "") },
     update: { enabled: e.UPDATE_CHECK, repo: e.UPDATE_REPO, version: e.APP_VERSION },
     settingsPath: e.SETTINGS_PATH,
-    jev: {
-      apiKey: jevKey!,
-      model: e.JEV_MODEL,
-      timeoutMs: e.JEV_TIMEOUT_MS,
-      dailyUsdCap: e.JEV_DAILY_USD_CAP,
-      usdPerMTok: e.JEV_USD_PER_MTOK,
-    },
+    jev:
+      provider === "jev"
+        ? {
+            provider,
+            apiKey: jevKey!,
+            model: e.JEV_MODEL,
+            timeoutMs: e.JEV_TIMEOUT_MS,
+            dailyUsdCap: e.JEV_DAILY_USD_CAP,
+            usdPerMTok: e.JEV_USD_PER_MTOK,
+            usdPerMTokOut: 0, // Jev bills input tokens only
+            minIntervalMs: 0, // Jev is cheap enough to ask every tick, as before
+          }
+        : {
+            provider,
+            apiKey: geminiKey ?? "",
+            model: e.GEMINI_MODEL,
+            timeoutMs: e.GEMINI_TIMEOUT_MS,
+            dailyUsdCap: e.GEMINI_DAILY_USD_CAP,
+            usdPerMTok: e.GEMINI_USD_PER_MTOK,
+            usdPerMTokOut: e.GEMINI_USD_PER_MTOK_OUT,
+            minIntervalMs: Math.max(0, e.GEMINI_MIN_INTERVAL_MS),
+            ...(e.GEMINI_THINKING_LEVEL ? { thinkingLevel: e.GEMINI_THINKING_LEVEL } : {}),
+          },
     tickMs: Math.max(1000, e.TICK_MS),
     dataRefreshMs: Math.max(15_000, e.DATA_REFRESH_MS),
     okx: { site: e.OKX_SITE, apiBase: e.OKX_API_BASE.replace(/\/+$/, ""), cliTimeoutMs: e.OKX_CLI_TIMEOUT_MS },

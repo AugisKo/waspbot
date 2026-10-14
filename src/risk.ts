@@ -1,7 +1,7 @@
-// The deterministic risk layer (hard rule 2: Jev chooses, code decides).
+// The deterministic risk layer (hard rule 2: LLM chooses, code decides).
 // Pure: no I/O, no clock, no randomness. Every veto, shrink and force says why.
 
-import { maxNotionalUsd, minutesSince, positionNotional } from "./bees/common.js";
+import { MARGIN_HEADROOM, maxNotionalUsd, minutesSince, positionNotional } from "./bees/common.js";
 import type { Action, BeeBrain, BeeContext, CapReason, Intent } from "./bees/types.js";
 
 export type { Action } from "./bees/types.js";
@@ -9,7 +9,7 @@ export type { Action } from "./bees/types.js";
 export interface Proposal {
   label: string;
   intent: Intent;
-  /** Jev's probability for the chosen label. */
+  /** Probability for the chosen label. */
   prob: number;
   /** Conviction level, rounded to 0..3. */
   conviction: number;
@@ -92,7 +92,7 @@ interface OpenCheck {
 /** Spread gate, funding veto, min size and the size cap for an open/switch/add. */
 function checkOpen(intent: Intent, input: RiskInput, conviction: number): OpenCheck {
   const { ctx, brain, sizeMult } = input;
-  const { bee, view, knobs } = ctx;
+  const { bee, view, knobs, cfg } = ctx;
   const max = maxNotionalUsd(ctx) * sizeMult;
   if (!(max > 0)) return { ok: false, why: "no_equity" };
 
@@ -102,8 +102,11 @@ function checkOpen(intent: Intent, input: RiskInput, conviction: number): OpenCh
     const inst = view.instruments.get(p.instId);
     if (!s || !inst) return { ok: false, why: "no_market_data" };
     if (s.spreadBp > knobs.spreadGateBps) return { ok: false, why: `spread_gate ${p.coin} ${s.spreadBp.toFixed(1)}bp` };
-    const room = max - positionNotional(p, s.mid, inst.ctVal);
-    const n = Math.min(intent.sizeFrac * maxNotionalUsd(ctx) * sizeMult, room);
+    // Cap add room against realised collateral (min of equityUsd and cashUsd) so unbooked uPnL never causes OKX 51008 rejections.
+    const collateralUsd = Math.max(0, Math.min(bee.equityUsd, bee.cashUsd));
+    const addMax = Math.min(cfg.risk.maxLeverage * collateralUsd * MARGIN_HEADROOM, cfg.risk.maxNotionalUsdPerBee) * sizeMult;
+    const room = addMax - positionNotional(p, s.mid, inst.ctVal);
+    const n = Math.min(intent.sizeFrac * addMax, room);
     const minUsd = inst.minSz * inst.ctVal * s.mid;
     if (n < minUsd) return { ok: false, why: "size_cap" };
     return { ok: true, notionalUsd: n };
@@ -192,10 +195,11 @@ export function applyRisk(input: RiskInput): RiskResult {
   if (p && intent.kind === "open") veto("invalid_while_positioned");
   if (p && intent.kind === "switch" && intent.instId === p.instId && intent.side === p.side) veto("switch_to_same");
 
+  const cooldownLeft = bee.lastOrderAt === null ? 0 : knobs.cooldownMinutes - minutesSince(bee.lastOrderAt, now);
+
   // 5. Opening gates.
   if (proposal && isOpening(intent)) {
     const dataStale = input.dataAgeMs > input.maxDataAgeMs;
-    const cooldownLeft = bee.lastOrderAt === null ? 0 : knobs.cooldownMinutes - minutesSince(bee.lastOrderAt, now);
     if (cap === "trade_cap" || cap === "fee_budget") veto(cap);
     else if (dataStale) veto("stale_market_data");
     else if (brain.openGate && intent.kind !== "add" && (proposal.prob < brain.openGate.minProb(ctx) || proposal.conviction < brain.openGate.minConviction)) {
@@ -213,13 +217,15 @@ export function applyRisk(input: RiskInput): RiskResult {
   let forcedBy: string | null = null;
   let status = !proposal ? (brain.idleStatus?.(ctx) ?? "no valid options") : vetoedBy ? `wanted ${proposal.label}, code said no: ${vetoedBy}` : proposal.label;
 
-  // 6. Never flat for long (drama rule 2). Suspended while any cap is active or data is stale.
+  // 6. Never flat for long (only for brains without neverForce, and never bypassing an active cooldown).
   if (!p && action.kind === "none") {
     const flatMin = minutesSince(bee.flatSince, now);
     if (cap) status = capStatus(cap, ctx);
     else if (input.dataAgeMs > input.maxDataAgeMs) status = "stale market data: waiting";
     else if (brain.neverForce) {
       /* waits for its own setup; status already says what it is waiting for */
+    } else if (cooldownLeft > 0) {
+      status = vetoedBy ? status : `cooling down (${Math.ceil(cooldownLeft)}m left)`;
     } else if (flatMin >= knobs.maxFlatMinutes) {
       const f = brain.forcedEntry(ctx);
       const c = f ? checkOpen(f, input, 0) : { ok: false, why: "no_candidate" };
@@ -232,7 +238,7 @@ export function applyRisk(input: RiskInput): RiskResult {
   }
   if (p && action.kind === "none" && cap) status = capStatus(cap, ctx);
 
-  // 7. Sizing is code's job: when Jev holds an undersized position, bring it back to target (not while capped or stale).
+  // 7. Sizing is code's job: when holding an undersized position, bring it back to target (not while capped or stale).
   if (p && action.kind === "none" && !cap && brain.rebalance && input.dataAgeMs <= input.maxDataAgeMs) {
     const add = brain.rebalance(ctx);
     const c = add ? checkOpen(add, input, 0) : null;

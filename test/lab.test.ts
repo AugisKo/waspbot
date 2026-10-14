@@ -40,7 +40,7 @@ function config(owner: { rules?: string; coins?: string[] } = {}): Config {
   return cfg;
 }
 
-/** An engine on a fixed market with a recording fake Jev that always answers off-menu (so nobody trades). */
+/** An engine on a fixed market with a recording fake chooser that always picks the menu's hold move (so nobody trades). */
 async function harness(withLab: boolean, cfg = config(), db = new Db(":memory:")) {
   const v = market();
   const feed = { view: () => v, refresh: async () => {}, refreshTickers: async () => {}, lastRefreshAt: NOW } as unknown as MarketFeed;
@@ -48,7 +48,10 @@ async function harness(withLab: boolean, cfg = config(), db = new Db(":memory:")
   const client: SystemOne = {
     async systemOne(req) {
       calls.push(JSON.stringify(req));
-      return { model: "fake", usage: { input_tokens: 100, output_tokens: 0 }, answers: { action: { type: "choice", choice: "NOT_ON_MENU", confidence: 1, probabilities: {} }, conviction: { type: "score", score: 1, confidence: 1, legend: {}, probabilities: {} } } } as never;
+      // An off-menu answer goes to the code fallback, which may trade; a hold keeps every tick identical.
+      const labels = Object.keys((req.questions.action as unknown as { criteria: object }).criteria);
+      const hold = labels.find((l) => ["WAIT", "HOLD", "RIDE", "HOLD_WINNER"].includes(l)) ?? "NOT_ON_MENU";
+      return { model: "fake", usage: { input_tokens: 100, output_tokens: 0 }, answers: { action: { type: "choice", choice: hold, confidence: 1, probabilities: {} }, conviction: { type: "score", score: 1, confidence: 1, legend: {}, probabilities: {} } } } as never;
     },
   };
   const store = withLab ? new LabStore(db) : null;
@@ -141,7 +144,7 @@ describe("beekeeper overlay: applied on the next tick, no restart", () => {
     h.store!.set("bee3", "Only chase meme coins with real volume behind the move.", ["PENGU", "DOGE"], "test", undefined, NOW);
     await h.engine.tick();
     const call = callOf(h.calls, "boozy");
-    expect(criteria(call).sort()).toEqual(["APE_DOGE", "APE_PENGU"]);
+    expect(criteria(call).sort()).toEqual(["APE_DOGE", "APE_PENGU", "WAIT"]); // a flat menu with setups offers WAIT
     expect(instructions(call)).toContain("This bee only ever trades PENGU, DOGE.");
     const state = (JSON.parse(call) as { state: { coins: { rows: Record<string, unknown> } } }).state;
     expect(Object.keys(state.coins.rows).sort()).toEqual(["DOGE", "PENGU"]);
@@ -203,12 +206,12 @@ describe("beekeeper overlay: the coin rule", () => {
     const h = await harness(true, config({ rules: OWNER_RULES, coins: ["PENGU", "DOGE"] }));
     h.store!.set("bee3", RULES, ["DOGE", "SOL", "BTC"], "test", undefined, NOW);
     await h.engine.tick();
-    expect(criteria(callOf(h.calls, "boozy"))).toEqual(["APE_DOGE"]);
+    expect(criteria(callOf(h.calls, "boozy"))).toEqual(["APE_DOGE", "WAIT"]);
     h.calls.length = 0;
     h.store!.rollback("bee3", "undo", NOW);
     h.store!.set("bee3", RULES, ["SOL", "BTC"], "test", undefined, NOW);
     await h.engine.tick();
-    expect(criteria(callOf(h.calls, "boozy")).sort()).toEqual(["APE_DOGE", "APE_PENGU"]);
+    expect(criteria(callOf(h.calls, "boozy")).sort()).toEqual(["APE_DOGE", "APE_PENGU", "WAIT"]);
   });
 
   it("a Breakout bee with an overlay coin list is only offered those coins", () => {

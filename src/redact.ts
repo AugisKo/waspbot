@@ -32,6 +32,10 @@ const PATTERNS: Array<[RegExp, string]> = [
   [/\b(?:[0-9a-fA-F]{1,4}:){1,6}:(?:[0-9a-fA-F]{1,4}:?){0,6}[0-9a-fA-F]{1,4}\b/g, "[ip6]"],
   // Home-directory paths that name a user
   [/\/(?:Users|home)\/[^/\s"']+/g, "~"],
+  // Google API keys: the new "AQ." format (base64url plus dots, ~53 chars) and the classic "AIza" one. Their -, _ and .
+  // break the long-blob patterns below into short runs, so they need their own.
+  [/\bAQ\.[A-Za-z0-9_.-]{16,}/g, MASK],
+  [/\bAIza[0-9A-Za-z_-]{30,}/g, MASK],
   // UUIDs (OKX API keys are UUID-shaped)
   [/\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/g, MASK],
   // Long hex blobs (secrets, signatures)

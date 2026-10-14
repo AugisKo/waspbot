@@ -1,4 +1,4 @@
-// Read-only key check. No orders, no transfers, no Jev decisions.
+// Read-only key check. No orders, no transfers, no paid decisions.
 // Prints only sanitised facts: works?, permissions, IP-bound yes/no, sub-account yes/no, distinct accounts, USDC equity.
 // Never prints key values, UIDs, labels or IPs.
 // pnpm keycheck
@@ -7,6 +7,7 @@
 import { lookup } from "node:dns/promises";
 import { createRequire } from "node:module";
 import { BEES, type OkxCreds } from "../config.js";
+import { checkGeminiKey } from "../jev.js";
 import { createOkxCli } from "../okx/cli.js";
 import { safeError } from "../redact.js";
 
@@ -17,8 +18,17 @@ const cli = createOkxCli({ site: "eea", timeoutMs: 10_000, maxConcurrent: 2 });
 type Row = Record<string, string>;
 let failures = 0;
 
-// ---- Jev: list models (free, no decision call) ----
-try {
+// ---- Gemini: look the model up (free, no tokens) ----
+if (env.GEMINI_API_KEY) {
+  const model = env.GEMINI_MODEL || "gemini-4-argon";
+  const err = await checkGeminiKey(env.GEMINI_API_KEY, model, 8000);
+  if (err) failures++;
+  console.log(`Gemini       ${err ? `FAILED ${err}` : `key OK · ${model} visible (billing is not checked: the free tier cannot run Argon)`}`);
+} else console.log("Gemini       no GEMINI_API_KEY set");
+
+// ---- Jev: list models (free, no decision call). Only if a Jev key is set. ----
+if (!env.TYPESAFE_API_KEY) console.log("Jev          no TYPESAFE_API_KEY set");
+else try {
   const require = createRequire(import.meta.url);
   const { TypeSafeClient } = require("@typesafe-ai/sdk");
   const c = new TypeSafeClient({ logLevel: "off", retry: { maxRetries: 0 }, timeout: 8000 });

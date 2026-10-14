@@ -1,4 +1,4 @@
-// What the first-run Setup page saves: the Jev key, an optional OpenAI key, the risk acknowledgement, the three
+// What the first-run Setup page saves: the chooser key (Gemini or Jev), an optional OpenAI key, the risk acknowledgement, the three
 // bees (name, trading style, tagline, optional generated portrait), and whether to join the Hive. Stored as one JSON file in the data volume,
 // readable by the engine's user only. Secrets in here are never sent to the dashboard or written to a log.
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -12,19 +12,19 @@ export type StyleId = (typeof STYLES)[number];
 export const STYLE_INFO: Record<StyleId, { label: string; blurb: string; name: string; tagline: string }> = {
   bizzy: {
     label: "Breakout",
-    blurb: "One volatility breakout a day on BTC, ETH, SOL or HYPE, ridden to the daily close. Patient, then all in.",
+    blurb: "Grinds both ways on 8 liquid majors: fades stretched moves, and takes confirmed daily breakouts on BTC, ETH, SOL or HYPE. Quick exits.",
     name: "Bizzy",
     tagline: "the grinder",
   },
   breezy: {
     label: "Trend",
-    blurb: "Trend following on BTC and ETH only. Few trades, rides winners, sized by volatility. The calm one.",
+    blurb: "Trend following on BTC and ETH only. Sits in cash in chop, rides winners, sized by volatility. The calm one.",
     name: "Breezy",
     tagline: "the calculated one",
   },
   boozy: {
     label: "Momentum",
-    blurb: "Chases the strongest 7-day mover across every liquid coin, and adds to winners. Big swings, strange coins.",
+    blurb: "Chases fresh momentum on high-volume coins, long or short, and adds once to a winner. Waits flat when nothing moves.",
     name: "Boozy",
     tagline: "the degen",
   },
@@ -54,7 +54,7 @@ const BeeSchema = z.object({
   /** The built-in brain this bee runs on (Setup derives it from the bee's coins; see bees/custom.ts). */
   style: z.enum(STYLES),
   tagline: z.string().trim().max(40).default(""),
-  /** The owner's rules for this bee in plain English, fed to Jev with every decision. */
+  /** The owner's rules for this bee in plain English, fed to the chooser with every decision. */
   rules: z.string().trim().max(500).default(""),
   /** Coin tickers this bee is restricted to ([] = any). */
   coins: z
@@ -75,7 +75,9 @@ const BeeSchema = z.object({
 
 export const SettingsSchema = z.object({
   version: z.literal(1),
-  jevKey: z.string().trim().min(8),
+  /** The chooser's key: Gemini (preferred when both are set) or Jev. Setup asks for at least one. */
+  geminiKey: z.string().trim().min(8).optional(),
+  jevKey: z.string().trim().min(8).optional(),
   openaiKey: z.string().trim().min(8).optional(),
   /** The owner password, as a salted scrypt hash (gate.ts). Absent in files saved before it existed. */
   ownerPasswordHash: z.string().startsWith("scrypt$").optional(),

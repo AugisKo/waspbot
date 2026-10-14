@@ -1,9 +1,10 @@
 # Boozy Bee: the degen
 
-> **Live rules since 2026-09-24:**
-> - Ranks on 7-day momentum (plus small 24h and attention terms), and commits to each pick for 24h: BAIL, SWITCH_COIN and FLIP_SHORT unlock after that.
-> - Enters at 1x. DOUBLE_DOWN adds 0.5x each time price runs another 1 ATR(1h, approximated as 2 x the 15m ATR) past the entry, up to 2x.
-> - Stop and trail at 3 x ATR(1h). 3 entries a day; adds are not counted.
+> **Live rules since 2026-10-13 (Gemini 4 Argon's rewrite):**
+> - Only coins with at least $15M 24h volume and spread at most 8 bp; if none qualify he waits. Long or short.
+> - APE_<coin>: 24h >= +1.5%, 1h >= 0, 1h OI change >= 0, RSI(14) <= 78, funding z <= 1.5. SHORT_<coin>: 24h <= -1.5%, 1h < 0, RSI(14) >= 22. Ranked on 24h (45%), 1h (35%) and 7d (20%) moves plus attention. Never forced in.
+> - Enters at 1x. One DOUBLE_DOWN after a +1.5 x ATR(1h) run, never past 1.5x equity in total; the stop moves to at least the new average entry.
+> - BAIL, SWITCH_COIN and FLIP_SHORT unlock after 30 min (was 24h). Stop 2.5 x ATR(1h), trail 2 x ATR(1h), profit lock +1.5% keeps 40%, +3% keeps 60%, +5% keeps 75%, 12h time stop. 3 trades a day, 60 min cooldown, fee budget $1.50.
 
 > Crooked party hat, manic grin, bent antenna, cocktail with a tiny umbrella, confetti. All-in, big swings, chaos.
 

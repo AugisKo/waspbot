@@ -44,6 +44,7 @@ async function boot(opts: { designs?: BeeDesign[] } = {}) {
   const setup = new Setup({
     settingsPath,
     jevModel: "jev-test",
+    geminiModel: "gemini-test",
     openai: { textModel: "t", imageModel: "i" },
     refDir: dir,
     okxApiBase: "https://okx.invalid",
@@ -51,6 +52,7 @@ async function boot(opts: { designs?: BeeDesign[] } = {}) {
     now: () => now,
     onSaved: () => saved++,
     checkJev: async (key) => (key === "good-jev-key" ? null : "Jev rejected that key."),
+    checkGemini: async (key) => (key === "good-gemini-key" ? null : "Google rejected that key."),
     listCoins: async () => COINS,
     design: async (_key, _model, description, coins) => {
       asked.push({ description, coins });
@@ -118,6 +120,34 @@ describe("setup", () => {
     const r = await t.post("/setup/save", { ...SAVE, jevKey: "bad-jev-key" });
     expect(r.status).toBe(400);
     expect(((await r.json()) as { error: string }).error).toMatch(/rejected/);
+    expect(loadSettings(t.settingsPath)).toBeNull();
+  });
+
+  it("saves a Gemini key instead of a Jev key, checked with Google, and the engine then runs Gemini 4 Argon", async () => {
+    const t = await boot();
+    expect((await t.post("/setup/check-gemini", { key: "good-gemini-key" })).status).toBe(200);
+    const bad = await t.post("/setup/check-gemini", { key: "bad-gemini-key" });
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as { error: string }).error).toMatch(/rejected/);
+    t.paintAll();
+    const noJev: Record<string, unknown> = { ...SAVE };
+    delete noJev.jevKey;
+    expect((await t.post("/setup/save", { ...noJev, geminiKey: "bad-gemini-key" })).status).toBe(400);
+    expect((await t.post("/setup/save", { ...noJev, geminiKey: "good-gemini-key", jevKey: "" })).status).toBe(200);
+    const s = loadSettings(t.settingsPath)!;
+    expect(s.geminiKey).toBe("good-gemini-key");
+    expect(s.jevKey).toBeUndefined();
+    expect(loadConfig({}, s).jev).toMatchObject({ provider: "gemini", model: "gemini-4-argon" });
+  });
+
+  it("refuses to save with no decision-model key at all", async () => {
+    const t = await boot();
+    t.paintAll();
+    const noJev: Record<string, unknown> = { ...SAVE };
+    delete noJev.jevKey;
+    const r = await t.post("/setup/save", noJev);
+    expect(r.status).toBe(400);
+    expect(((await r.json()) as { error: string }).error).toMatch(/Gemini key/);
     expect(loadSettings(t.settingsPath)).toBeNull();
   });
 
@@ -262,13 +292,14 @@ describe("finishDesign", () => {
     expect(finishDesign(design({ coins: ["BTC", "ETH"], baseStyle: "breezy" }), COINS).baseStyle).toBe("breezy");
     expect(finishDesign(design({ coins: ["BTC", "SOL"], baseStyle: "breezy" }), COINS).baseStyle).toBe("boozy");
     expect(finishDesign(design({ coins: ["SOL", "HYPE"], baseStyle: "bizzy" }), COINS).baseStyle).toBe("bizzy");
-    expect(finishDesign(design({ coins: ["DOGE"], baseStyle: "bizzy" }), COINS).baseStyle).toBe("boozy");
+    expect(finishDesign(design({ coins: ["DOGE"], baseStyle: "bizzy" }), COINS).baseStyle).toBe("bizzy");
+    expect(finishDesign(design({ coins: ["PEPE"], baseStyle: "bizzy" }), COINS).baseStyle).toBe("boozy");
     expect(finishDesign(design({ coins: ["BTC"], baseStyle: "boozy" }), COINS).baseStyle).toBe("boozy");
   });
 
   it("says why when the brain is switched, and stays quiet when it isn't", () => {
-    expect(finishDesign(design({ coins: ["SOL", "DOGE"], baseStyle: "bizzy" }), COINS).styleNote).toBe(
-      "Breakout only trades BTC, ETH, SOL and HYPE, so with SOL and DOGE this bee runs on Momentum.",
+    expect(finishDesign(design({ coins: ["SOL", "PEPE"], baseStyle: "bizzy" }), COINS).styleNote).toBe(
+      "Breakout only trades BTC, ETH, SOL, HYPE, XRP, SUI, DOGE and LINK, so with SOL and PEPE this bee runs on Momentum.",
     );
     expect(finishDesign(design({ coins: [], baseStyle: "breezy" }), COINS).styleNote).toBe("Trend only trades BTC and ETH, so on any coin this bee runs on Momentum.");
     expect(finishDesign(design({ coins: ["BTC"], baseStyle: "breezy" }), COINS).styleNote).toBeUndefined();

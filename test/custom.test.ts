@@ -3,13 +3,13 @@ import { customBrain, deriveStyle } from "../src/bees/custom.js";
 import { BRAINS } from "../src/bees/index.js";
 import { bee, coin, ctx, position, view } from "./fixtures.js";
 
-// A market where TRUMP is the weakest mover, so an unrestricted Momentum bee would never pick it.
+// A market where TRUMP is the weakest mover (a fresh impulse, but the smallest), so an unrestricted Momentum bee ranks it last.
 const market = () =>
   view([
     coin("PEPE", { ret7dPct: 40, ret24hPct: 10 }),
     coin("DOGE", { ret7dPct: 25, ret24hPct: 5 }),
     coin("SOL", { ret7dPct: 10, ret24hPct: 2 }),
-    coin("TRUMP", { ret7dPct: -5, ret24hPct: -1 }),
+    coin("TRUMP", { ret7dPct: -5, ret24hPct: 1.6 }),
   ]);
 
 describe("owner-designed bees", () => {
@@ -18,9 +18,9 @@ describe("owner-designed bees", () => {
   it("a coin-restricted bee is only ever offered its own coins", () => {
     const c = ctx("boozy", bee("boozy"), market());
     expect(Object.keys(BRAINS.boozy.menu(c))).toContain("APE_PEPE");
-    expect(Object.keys(trump.menu(c))).toEqual(["APE_TRUMP"]);
+    expect(Object.keys(trump.menu(c))).toEqual(["APE_TRUMP", "WAIT"]); // a flat menu with setups offers WAIT
     expect(trump.universe(c).map((id) => id.split("-")[0])).toEqual(["TRUMP"]);
-    expect(trump.forcedEntry(c)?.instId).toMatch(/^TRUMP-/);
+    expect(trump.forcedEntry(c)).toBeNull(); // every style waits for its own setup now (neverForce)
     expect(trump.snapshotCoins(c).map((id) => id.split("-")[0])).toEqual(["TRUMP"]);
   });
 

@@ -54,7 +54,8 @@ export interface Snapshot {
   bees: PublicBee[];
   leaderboard: Array<{ bee: BeeName; equityUsd: number }>;
   totals: { feesUsd: number; fundingUsd: number; jevUsd: number; pnlUsd: number };
-  jev: { spentTodayUsd: number; dailyCapUsd: number; capTripped: boolean; down: boolean };
+  /** The chooser (the name "jev" is kept for older engines). provider/name/fullName are absent on engines before Gemini support. */
+  jev: { spentTodayUsd: number; dailyCapUsd: number; capTripped: boolean; down: boolean; provider?: "gemini" | "jev" | "code"; name?: string; fullName?: string };
   recon: { ok: boolean | null; detail: string; ts: number };
   market: { refreshedAt: number; universe: string[]; spreadBlocked: Array<{ coin: string; spreadBp: number }>; attention: "news" | "volume" };
   visitors?: { total: number; watching: number };
@@ -114,7 +115,7 @@ export interface DecisionEvent {
   pulse?: boolean;
   /** Flat bee with nothing to ask Jev: what it is watching for (e.g. "SOL is 0.80% from breakout"). */
   watch?: string;
-  /** One legal move (a hold, e.g. boozy's 24h lock): the rules decided and Jev was not asked. */
+  /** One legal move (a hold, e.g. a Momentum bee inside its minimum hold): the rules decided and the model was not asked. */
   required?: boolean;
   /** The bee's money at this moment: open P&L while positioned, total P&L when flat, and the move since its last row. */
   live?: { coin: string | null; side: "long" | "short" | null; valueUsd: number; kind: "open" | "total"; deltaUsd: number };
@@ -227,3 +228,6 @@ export interface HiveStatus {
   /** false: no owner password on this server (join/leave impossible until one is set). */
   passwordSet: boolean;
 }
+
+/** The chooser's short name for labels ("Argon", "Jev", "Code"). Older engines did not send one: they ran Jev. */
+export const chooserShort = (snap: Snapshot | null | undefined): string => snap?.jev?.name ?? "Jev";

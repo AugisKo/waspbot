@@ -59,12 +59,13 @@ function profile(cfg: Config | null, lab?: LabStore) {
   };
 }
 
-/** No Jev key in the environment and no Setup file yet: serve only the Setup page until the owner fills it in. */
+/** No chooser key in the environment and no Setup file yet: serve only the Setup page until the owner fills it in. */
 function runSetup() {
   const env = process.env;
   const setup = new Setup({
     settingsPath: SETTINGS_PATH,
     jevModel: env.JEV_MODEL?.trim() || "jev-1.13.0",
+    geminiModel: env.GEMINI_MODEL?.trim() || "gemini-4-argon",
     openai: { apiKey: env.OPENAI_API_KEY?.trim() || undefined, textModel: env.OPENAI_TEXT_MODEL?.trim() || "gpt-5.4-nano", imageModel: env.OPENAI_IMAGE_MODEL?.trim() || "gpt-image-2" },
     refDir: REF_DIR,
     windowMin: Math.max(1, Number(env.SETUP_WINDOW_MIN) || 120),
@@ -81,7 +82,7 @@ function runSetup() {
 
 async function main() {
   const settings = loadSettings(SETTINGS_PATH);
-  if (!settings && !process.env.TYPESAFE_API_KEY?.trim()) return runSetup();
+  if (!settings && !process.env.TYPESAFE_API_KEY?.trim() && !process.env.GEMINI_API_KEY?.trim()) return runSetup();
   let cfg;
   try {
     cfg = loadConfig({ ...process.env, SETTINGS_PATH }, settings);
@@ -93,7 +94,7 @@ async function main() {
     throw err;
   }
   setLogLevel(cfg.logLevel);
-  log.info("beebots engine starting", { mode: cfg.mode, tickMs: cfg.tickMs, dataRefreshMs: cfg.dataRefreshMs, jevModel: cfg.jev.model });
+  log.info("beebots engine starting", { mode: cfg.mode, tickMs: cfg.tickMs, dataRefreshMs: cfg.dataRefreshMs, chooser: cfg.jev.provider, model: cfg.jev.model });
 
   const db = new Db(cfg.dbPath);
   const bus = new EventBus(db);
@@ -127,7 +128,9 @@ async function main() {
       : new OkxExecutor(cli, cfg.creds, demo, (id) => feed.view().instruments.get(id), cfg.risk.maxLeverage);
 
   const startOfDay = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate());
-  const jev = new Jev({ ...cfg.jev, spentTodayUsd: db.jevSpendSince(startOfDay) });
+  // Today's chooser spend survives a restart: the decisions' recorded cost, or the reservation ledger (which also holds
+  // calls a restart cut off, at their worst case), whichever is higher.
+  const jev = new Jev({ ...cfg.jev, spentTodayUsd: Math.max(db.jevSpendSince(startOfDay), db.chooserSpendSince(startOfDay)), ledger: db });
 
   // `deploy/close.sh` drops this file into the data volume to end the experiment cleanly (see Engine.windDown).
   const closeFlag = join(dirname(cfg.dbPath), `close-${cfg.mode}`);

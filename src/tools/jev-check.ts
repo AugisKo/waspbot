@@ -1,4 +1,4 @@
-// Phase 4 check: N real Jev calls on live snapshots (dry: no orders). Verifies cost = input_tokens x $/Mtok.
+// N real chooser calls (Gemini or Jev, whichever key is set) on live snapshots (dry: no orders). Prints cost per call.
 // pnpm jev:check [N=100]
 import { BREEZY_COINS } from "../bees/breezy.js";
 import { BRAINS } from "../bees/index.js";
@@ -18,8 +18,9 @@ const feed = new MarketFeed(
   () => [],
 );
 await feed.refresh();
-// Allow for a real network round trip on this check; the engine keeps JEV_TIMEOUT_MS.
-const jev = new Jev({ ...cfg.jev, timeoutMs: Math.max(cfg.jev.timeoutMs, 5000) });
+// Allow for a real network round trip on this check; the engine keeps its own timeout. No pacing: every ask is a call.
+// Note: with a Gemini key the cost is input + output; the MATCH line below only prices input tokens (exact for Jev).
+const jev = new Jev({ ...cfg.jev, timeoutMs: Math.max(cfg.jev.timeoutMs, 5000), minIntervalMs: 0 });
 
 type Row = { bee: string; ok: boolean; tokens: number; cost: number; latency: number; choice?: string; p?: number; err?: string };
 const rows: Row[] = [];

@@ -19,6 +19,8 @@ COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --chown=node:node package.json ./
 COPY --chown=node:node scripts/okx-profiles.sh ./scripts/okx-profiles.sh
+# Gemini 4 Argon's intended knobs, for `dist/tools/effective-config.js --diff` (README: Run it with Gemini 4 Argon).
+COPY --chown=node:node strategies/ARGON_INTENDED.json ./strategies/ARGON_INTENDED.json
 # The three original portraits: the default art, and the style reference for generated bees.
 COPY --chown=node:node dashboard/public/bees ./ref
 USER node

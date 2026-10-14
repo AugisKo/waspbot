@@ -1,4 +1,4 @@
-// First-run Setup: shown instead of the dashboard until the engine has a Jev key. No code needed: the first person to
+// First-run Setup: shown instead of the dashboard until the engine has a decision-model key (Gemini or Jev). No code needed: the first person to
 // finish it owns the server, and it closes for good once saved (or times out after SETUP_WINDOW_MIN, until the engine
 // restarts). The owner picks an owner password here for later dashboard writes. Keys go straight to the engine.
 // Each bee is designed from one sentence (OpenAI invents its name, rules, coins and look; the engine checks them),
@@ -65,7 +65,7 @@ const nameProblem = (name: string): string | null =>
       ? "Bizzy, Breezy and Boozy are the official bees. Pick another name."
       : null;
 
-const STEPS = ["The rules", "Password", "Jev", "OpenAI", "Your bees", "The Hive", "Start"] as const;
+const STEPS = ["The rules", "Password", "Decisions", "OpenAI", "Your bees", "The Hive", "Start"] as const;
 
 class TimedOut extends Error {}
 
@@ -88,8 +88,10 @@ export function Setup() {
   const [password2, setPassword2] = useState("");
   const [timedOut, setTimedOut] = useState(false);
   const [accept, setAccept] = useState({ notAdvice: false, paperDefault: false, ownRisk: false });
-  const [jevKey, setJevKey] = useState("");
-  const [jevOk, setJevOk] = useState(false);
+  // The decision model: Gemini 4 Argon by default, or Jev (TypeSafe AI).
+  const [chooser, setChooser] = useState<"gemini" | "jev">("gemini");
+  const [modelKey, setModelKey] = useState("");
+  const [keyOk, setKeyOk] = useState(false);
   const [openaiKey, setOpenaiKey] = useState("");
   const [openaiOk, setOpenaiOk] = useState(false);
   const [bees, setBees] = useState<BeeDraft[]>([]);
@@ -174,7 +176,7 @@ export function Setup() {
   const save = () =>
     run(async () => {
       await post("save", {
-        jevKey,
+        ...(chooser === "gemini" ? { geminiKey: modelKey } : { jevKey: modelKey }),
         ...(openaiKey ? { openaiKey } : {}),
         accept,
         ownerPassword: password,
@@ -317,31 +319,51 @@ export function Setup() {
 
         {step === 2 && (
           <section>
-            <h2>Your Jev key</h2>
-            <p>
-              Jev (from TypeSafe AI) makes every decision. Get a key at{" "}
-              <a href="https://console.typesafe.ai/keys" target="_blank" rel="noopener">
-                console.typesafe.ai/keys
-              </a>
-              . Jev charges per decision. The engine caps Jev spending at $2 a day by default.
-            </p>
+            <h2>Who makes the calls</h2>
+            {chooser === "gemini" ? (
+              <p>
+                <b>Gemini 4 Argon</b> picks each bee's next move. Get a key in{" "}
+                <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">
+                  Google AI Studio
+                </a>{" "}
+                from a project with billing turned on: the free tier cannot use Argon. The engine asks at most once a minute per bee and caps
+                Gemini spending at $3 a day by default.{" "}
+                <button className="link" onClick={() => (setChooser("jev"), setModelKey(""), setKeyOk(false))}>
+                  Use Jev instead
+                </button>
+              </p>
+            ) : (
+              <p>
+                <b>Jev</b> (from TypeSafe AI) picks each bee's next move. Get a key at{" "}
+                <a href="https://console.typesafe.ai/keys" target="_blank" rel="noopener">
+                  console.typesafe.ai/keys
+                </a>
+                . Jev charges per decision. The engine caps Jev spending at $2 a day by default.{" "}
+                <button className="link" onClick={() => (setChooser("gemini"), setModelKey(""), setKeyOk(false))}>
+                  Use Gemini 4 Argon instead
+                </button>
+              </p>
+            )}
             <input
               className="setup-input mono"
               type="password"
               autoComplete="off"
-              placeholder="Jev API key"
-              value={jevKey}
-              onChange={(e) => (setJevKey(e.target.value), setJevOk(false))}
+              placeholder={chooser === "gemini" ? "Gemini API key" : "Jev API key"}
+              value={modelKey}
+              onChange={(e) => (setModelKey(e.target.value), setKeyOk(false))}
             />
-            {jevOk && <p className="setup-ok">✓ Jev answered. Key works.</p>}
+            {keyOk && <p className="setup-ok">{chooser === "gemini" ? "✓ Google accepted the key." : "✓ Jev answered. Key works."}</p>}
             <div className="setup-actions">
               <button className="ghost" onClick={() => setStep(1)}>
                 Back
               </button>
-              {jevOk ? (
+              {keyOk ? (
                 <button onClick={() => setStep(3)}>Next</button>
               ) : (
-                <button disabled={busy || jevKey.trim().length < 8} onClick={() => run(async () => (await post("check-jev", { key: jevKey.trim() }), setJevOk(true)))}>
+                <button
+                  disabled={busy || modelKey.trim().length < 8}
+                  onClick={() => run(async () => (await post(chooser === "gemini" ? "check-gemini" : "check-jev", { key: modelKey.trim() }), setKeyOk(true)))}
+                >
                   {busy ? "Checking…" : "Check key"}
                 </button>
               )}

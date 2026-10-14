@@ -47,4 +47,22 @@ describe("safeError", () => {
     expect(s.code).toBe("50113");
     expect(s.message).toBe("Unauthorized for [ip]");
   });
+
+  it("masks Google API keys in free text: the new AQ. format (with - _ .) and the classic AIza format", () => {
+    const keys = [
+      "AQ.Xx0FakeexampleexampleexampleexampleexampleXYZ12345",
+      "AQ.Xx0Fake-xample_xample-xample.xample-xample_xY-1234",
+      "AIzaSyD-example_example-example_exampl12",
+    ];
+    for (const k of keys) {
+      const out = redactString(`gemini 403 for key ${k}: denied`);
+      expect(out).not.toContain(k.slice(3, 20));
+      expect(out).toContain("[redacted]");
+    }
+    expect(JSON.stringify(redact({ headers: { "x-goog-api-key": keys[1] } }))).not.toContain("xample");
+  });
+
+  it("keeps ordinary text with AQ or AI in it", () => {
+    expect(redactString("AQ. is a prefix; AIza alone is fine; AQUA 1.5x")).toBe("AQ. is a prefix; AIza alone is fine; AQUA 1.5x");
+  });
 });

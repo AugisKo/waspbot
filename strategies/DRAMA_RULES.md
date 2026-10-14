@@ -1,5 +1,7 @@
 # Drama rules: shared by all three bees
 
+> **Since 2026-10-13 (Gemini 4 Argon's rewrite):** rules 1 and 2 below are retired. Forced entries drove 37 of 58 of the official bees' trades and lost money, so every bee now waits flat for its own setup (`neverForce`), and a flat menu offers WAIT. With a Gemini key the chooser is Gemini 4 Argon (`gemini-4-argon`, at most one paid call per bee per minute, $3/day cap for all bees); with a Jev key it is Jev; with no key, over the cap, or on any error, a deterministic code chooser answers instead. The risk layer is unchanged in spirit: code stops, caps, cooldowns and sizing decide.
+
 The video fails if a bee sits in cash. Correct trading is dead television. These rules are enforced in **code**, in the risk layer. They are not left to Jev.
 
 ## 1. Jev always has to choose

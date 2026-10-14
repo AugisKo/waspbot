@@ -25,11 +25,15 @@ services:
       DRY_RUN: ${DRY_RUN:-true}
       MODE: ${MODE:-dry}
       LIVE_ACK: ${LIVE_ACK:-}
-      # Optional here: Setup asks for them and stores them in the data volume.
+      # Optional here: Setup asks for them and stores them in the data volume. A Gemini key runs the bees on
+      # Gemini 4 Argon (README: Run it with Gemini 4 Argon); a Jev key alone runs them on Jev.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      # How often each bee asks Jev, and the hard daily cap on Jev spend in USD (see docs/COSTS.md).
+      # How often each bee is looked at (stops, caps), and the hard daily caps on decision spend in USD.
+      # Gemini is asked at most once a minute per bee whatever TICK_MS is (GEMINI_MIN_INTERVAL_MS).
       TICK_MS: ${TICK_MS:-10000}
+      GEMINI_DAILY_USD_CAP: ${GEMINI_DAILY_USD_CAP:-3}
       JEV_DAILY_USD_CAP: ${JEV_DAILY_USD_CAP:-2}
       BEE_START_EQUITY_USD: ${BEE_START_EQUITY_USD:-333}
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}

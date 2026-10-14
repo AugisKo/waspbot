@@ -2,8 +2,9 @@
 
 [![Watch the video: I built AI trading bees with Jev](docs/video.jpg)](https://www.youtube.com/watch?v=8ijN8LGljKg)
 
-Three AI trading bees race each other on OKX perpetual futures. Every decision comes from **Jev** (TypeSafe AI's
-decision model), and every order goes through a risk layer written in plain code. A live dashboard shows each
+Three AI trading bees race each other on OKX perpetual futures. Every decision comes from an AI model, **Gemini 4
+Argon** (see [Run it with Gemini 4 Argon](#run-it-with-gemini-4-argon)) or **Jev** (TypeSafe AI's decision model), and
+every order goes through a risk layer written in plain code. A live dashboard shows each
 decision, order, fee and funding payment as it happens.
 
 **It runs on paper by default.** The bees use real market prices and simulated money. Nothing touches an exchange
@@ -30,7 +31,8 @@ Use code **MAGIC10** at checkout for 10% off.
    - tick the three risk statements
    - pick an **owner password** (8+ characters). Your dashboard is public; the password is what lets *you* change
      things from it later, like joining or leaving the Hive. Write it down.
-   - paste your **Jev key** (from [console.typesafe.ai/keys](https://console.typesafe.ai/keys))
+   - paste a **Gemini key** for Gemini 4 Argon (see [Run it with Gemini 4 Argon](#run-it-with-gemini-4-argon)), or
+     press **Use Jev instead** and paste a **Jev key** (from [console.typesafe.ai/keys](https://console.typesafe.ai/keys))
    - paste an **OpenAI key** (required: it designs your bees and paints them; a few cents in total)
    - design your three bees. For each one, answer **How do you want this bee to trade?** in a sentence ("a Trump bee
      that only ever trades TRUMP", "a sleepy bee that only buys bitcoin dips"), press **Create my bee**, and OpenAI
@@ -63,7 +65,8 @@ Each bee gets its own portrait, painted in the same style as the originals:
 **Copy a winning bee.** Every bee on [beebots.tech](https://beebots.tech) shows its rules with a **Copy** button. Copy
 a winner's rules and paste them into **How do you want this bee to trade?** to start from its playbook.
 
-Each bee starts with $333 of paper money. Jev spending is capped at $2 a day by default.
+Each bee starts with $333 of paper money. Decision spending is capped by default at $3 a day with Gemini, or $2 a day
+with Jev.
 
 ### Already have a server?
 
@@ -91,6 +94,67 @@ docker compose up -d
 Run it over SSH (or hPanel's browser terminal on Hostinger) in the folder that holds your `docker-compose.yml`
 (`docker compose ls` shows where it is). To turn the check off, set `UPDATE_CHECK=false`.
 
+## Run it with Gemini 4 Argon
+
+Gemini 4 Argon (`gemini-4-argon`) is Google's model. It rewrote the three trading styles (see
+[`strategies/`](strategies/)), and with a Gemini key it also picks every bee's next move. The dashboard then shows
+**Powered by Gemini 4 Argon**.
+
+**1. Get a key.** Open [Google AI Studio](https://aistudio.google.com/apikey) and create an API key in a Google Cloud
+project that has billing turned on (the paid tier). **The free tier cannot use Argon**: a free-tier key may pass
+Setup's check, but the bees' calls are refused, and the bees fall back to the code chooser.
+
+**2. Give it to your bees.** Either:
+
+- a new install: paste it on Setup, in the **Who makes the calls** step; or
+- an existing install: put `GEMINI_API_KEY=...` in the `.env` next to `docker-compose.yml` (or in Hostinger Docker
+  Manager's environment variables) and run `docker compose up -d`. A Gemini key wins over a Jev key, so you can leave
+  the Jev key where it is. To go back to Jev, remove the Gemini key.
+
+**3. The settings** (all optional; the defaults are safe):
+
+| setting | default | what it does |
+|---|---|---|
+| `GEMINI_API_KEY` | blank | Your key. It is sent only in the `x-goog-api-key` header, never in a URL, a prompt or a log. |
+| `GEMINI_MODEL` | `gemini-4-argon` | The model. |
+| `GEMINI_DAILY_USD_CAP` | `3` | Hard daily cap on Gemini spend, for all three bees together. Over it, the code chooser answers until 00:00 UTC. |
+| `GEMINI_MIN_INTERVAL_MS` | `60000` | At most one paid call per bee this often, whatever `TICK_MS` is. In between, the bee keeps what it has. |
+| `GEMINI_USD_PER_MTOK` | `4` | Price per million input tokens, used to keep score against the cap. |
+| `GEMINI_USD_PER_MTOK_OUT` | `20` | Price per million output tokens (thinking counts as output). |
+| `GEMINI_TIMEOUT_MS` | `3000` | How long one call may take before the bee falls back to code for that decision. |
+| `GEMINI_THINKING_LEVEL` | blank | Optional `thinkingConfig.thinkingLevel`. Blank = the model's default. |
+
+**Pricing.** Argon costs **$2 per million input tokens and $10 per million output tokens until 30 Nov**, then
+**$4 and $20**. The defaults above use the later price, so until 30 Nov the cap counts each call at twice what Google
+bills: your bees stop at about $1.50 of real spend, not $3. Set `GEMINI_USD_PER_MTOK=2` and `GEMINI_USD_PER_MTOK_OUT=10`
+if you want the cap to match the launch price, and set them back on 1 Dec. Check Google's pricing page before you rely
+on either.
+
+**How the cap stays hard.** Before each call the engine reserves the call's worst case: its whole prompt, plus the full
+1,024-token answer budget (about 2 cents at $20 per million). It adds that to what has been spent today plus every
+call still in flight, and if the total would pass the cap, the bee uses the code chooser instead. When Google answers,
+the reservation settles to the billed amount. Reservations are written to the database first, so a restart in the
+middle of a call cannot reset the count. Asking once a minute for three bees all day would be up to 4,320 calls, so on
+the default cap expect the cap, not the interval, to set how many Argon calls you get each day.
+
+**When Argon is not answering** (no key, cap hit, timeout, an error, or an answer that is not on the menu), a
+deterministic code chooser picks the move instead (the dashboard says so while Argon is offline, over its cap, or has
+no key). Stops, time stops and the daily loss stop
+never wait for any model: they run on their own timer.
+
+**Already changed some settings?** A value set in your `.env` beats the new defaults, so an `.env` copied from an older
+`.env.example` keeps the old rules' trade caps and fee budgets. To see what your engine will actually run, and every
+knob that differs from Argon's rules (keys are shown only as present or absent, never their values):
+
+```sh
+docker compose run --rm --no-deps --entrypoint node -v "$PWD/.env:/cfg/env:ro" engine \
+  dist/tools/effective-config.js /cfg/env --settings /data/settings.json --diff strategies/ARGON_INTENDED.json
+```
+
+(With no `.env` file, use `-` instead of `/cfg/env` and drop the `-v` part.) Remove the lines it lists from your `.env`
+to get Argon's values, then `docker compose up -d`. From a checkout: `pnpm effective-config .env --diff
+strategies/ARGON_INTENDED.json`.
+
 ## The Hive
 
 The Hive is a public leaderboard at [beebots.tech](https://beebots.tech) where everyone's bees race each other. It is
@@ -102,7 +166,7 @@ The Hive is a public leaderboard at [beebots.tech](https://beebots.tech) where e
   each paper fill (coin, side, size, price, time, fee). The board shows the % gain or loss, not dollars; the equity and fills are
   there so it can replay every trade against OKX's public prices and mark the bee **verified**. Also a random hive id
   and key made when you join, so later reports can be matched to your install.
-- **Never shared:** your Jev, OpenAI or OKX keys, any exchange account data, your server's address, or anything else.
+- **Never shared:** your Gemini, Jev, OpenAI or OKX keys, any exchange account data, your server's address, or anything else.
 - **Paper only.** The engine refuses to report in `MODE=live`, and the board rejects live reports.
 - **Join or leave:** tick it on Setup, or use **Join the Hive** in the dashboard header. Joining and leaving from the
   dashboard need your **owner password** (the one you picked on Setup; 8 wrong tries lock it for 15 minutes). Leaving
@@ -133,10 +197,10 @@ Your sentence becomes two things the engine enforces, and one it passes on:
 - **Coins.** If your bee names coins, it only ever trades those. They must be crypto perpetuals listed on OKX EEA right
   now (Setup checks the live list and asks you to rephrase if none match).
 - **The engine it runs on.** Every bee runs on one of three built-in trading styles below. A bee limited to BTC and/or
-  ETH can run on Trend; one limited to BTC, ETH, SOL or HYPE can run on Breakout; everything else runs on Momentum,
-  which works on any coin.
-- **Rules.** Its rules go to Jev with every decision, and Jev follows them when picking among the moves the style
-  offers. They steer the choice; they can't invent moves the style doesn't have, and the risk layer below still applies.
+  ETH can run on Trend; one limited to BTC, ETH, SOL, HYPE, XRP, SUI, DOGE or LINK can run on Breakout; everything else
+  runs on Momentum, which works on any coin.
+- **Rules.** Its rules go to the decision model (Gemini 4 Argon or Jev) with every decision, and it follows them when
+  picking among the moves the style offers. They steer the choice; they can't invent moves the style doesn't have, and the risk layer below still applies.
 
 A coin still has to pass the same gates as any other (at least $1M of 24h volume, a tight spread). If your bee's coin
 doesn't, the bee just waits until it does.
@@ -145,13 +209,15 @@ doesn't, the bee just waits until it does.
 
 | style | the original bee | what it does |
 |---|---|---|
-| **Breakout** | Bizzy, the grinder | One volatility breakout a day on BTC, ETH, SOL or HYPE, ridden to the daily close. |
-| **Trend** | Breezy, the calculated one | Trend following on BTC and ETH only. Few trades, rides winners, sized by volatility. |
-| **Momentum** | Boozy, the degen | Chases the strongest 7-day mover across every liquid coin, and adds to winners. |
+| **Breakout** | Bizzy, the grinder | Both ways on 8 liquid majors: fades stretched moves (RSI and Bollinger bands), and takes confirmed daily breakouts on BTC, ETH, SOL or HYPE. Banks at the middle band or +1R, 4-hour time stop. Up to 4 trades a day. |
+| **Trend** | Breezy, the calculated one | Trend following on BTC and ETH only. Sits in cash in chop, adds only to a winner, sized by trend strength under a volatility cap. Up to 2 trades a day. |
+| **Momentum** | Boozy, the degen | Chases fresh, high-volume moves long or short, adds once to a winner, bails when the move stalls, 12-hour time stop. Up to 3 trades a day. |
 
 Bizzy, Breezy and Boozy are the official bees (they run on [beebots.tech](https://beebots.tech)), so their names and art
-are theirs; your bees get their own. Two of your bees can share a style. The full rules are in [`strategies/`](strategies/), and the rules every bee
-shares (caps, stops, "never flat for long") are in [`strategies/DRAMA_RULES.md`](strategies/DRAMA_RULES.md).
+are theirs; your bees get their own. Two of your bees can share a style. The styles were rewritten by Gemini 4 Argon on
+13 Oct 2026: no style is ever forced into a trade any more, and each waits flat for its own setup. The full rules are
+in [`strategies/`](strategies/), and the rules every bee shares (caps, stops) are in
+[`strategies/DRAMA_RULES.md`](strategies/DRAMA_RULES.md).
 
 ## How a decision is made
 
@@ -159,13 +225,17 @@ Every tick, for every bee:
 
 1. **Look.** Live OKX market data: tickers, candles, RSI, MACD, ATR, Bollinger, Donchian, funding, open interest.
 2. **Summarise.** A small numeric snapshot of the market and the bee's own position.
-3. **Ask Jev.** Jev picks one move from a menu of moves that are actually valid right now, with probabilities.
+3. **Ask the model.** Gemini 4 Argon (or Jev) picks one move from a menu of moves that are actually valid right now.
+   With Gemini, each bee asks at most once a minute.
 4. **Check.** Plain code can veto, shrink or force the move: max 2x leverage, per-bee stops, a daily loss stop,
-   trade caps, a fee budget, cooldowns, and a hard daily cap on Jev spending.
+   trade caps, a fee budget, cooldowns, and a hard daily cap on model spending.
 5. **Record, then act.** The decision is written to SQLite before anything happens.
 6. **Broadcast.** The dashboard streams it live.
 
-Jev is stateless and never sees an order endpoint. If Jev is down or slow, the bees hold and open nothing.
+The model is stateless and never sees an order endpoint. If it is down, slow, over its daily cap, or there is no key, a
+deterministic code chooser picks from the same menu, and the same risk layer applies. Stops never wait for the model:
+a separate exit watch checks every open position every couple of seconds, and each bee has an order lock, so the watch
+and the tick can never send two orders for one bee.
 
 ## Settings
 
@@ -176,8 +246,10 @@ in [`.env.example`](.env.example). The common ones:
 | setting | default | what it does |
 |---|---|---|
 | `PUBLIC_DOMAIN` | blank | A domain pointed at your server. Caddy then gets an HTTPS certificate on its own. **Recommended**: without it, the Setup page and your keys travel over plain HTTP. |
-| `TICK_MS` | `10000` | How often each bee asks Jev. Faster is more exciting and costs more (see [docs/COSTS.md](docs/COSTS.md)). |
-| `JEV_DAILY_USD_CAP` | `2` | Hard daily cap on Jev spend. When it's hit, every bee holds until 00:00 UTC. |
+| `GEMINI_API_KEY` | blank | Runs the bees on Gemini 4 Argon (see [Run it with Gemini 4 Argon](#run-it-with-gemini-4-argon)). |
+| `GEMINI_DAILY_USD_CAP` | `3` | Hard daily cap on Gemini spend. When it's hit, the code chooser answers until 00:00 UTC. |
+| `TICK_MS` | `10000` | How often each bee is looked at, and how often it asks Jev. Faster is more exciting and costs more with Jev (see [docs/COSTS.md](docs/COSTS.md)). Gemini is paced by `GEMINI_MIN_INTERVAL_MS`. |
+| `JEV_DAILY_USD_CAP` | `2` | Hard daily cap on Jev spend. When it's hit, the code chooser answers until 00:00 UTC. |
 | `BEE_START_EQUITY_USD` | `333` | Paper money per bee. |
 
 **Run Setup again** (new names, new keys, or a forgotten owner password):
@@ -214,7 +286,7 @@ there is no button for it.
 - The engine talks to OKX's EEA site (`eea.okx.com`). Check that OKX's derivatives are available where you live
   before you go anywhere near real money.
 
-**Ending a live run:** `docker compose exec engine touch /data/close-live`. The engine stops asking Jev, closes every
+**Ending a live run:** `docker compose exec engine touch /data/close-live`. The engine stops asking the model, closes every
 position with reduce-only market orders, and stays up so the dashboard keeps the final result.
 
 Again: this is not financial advice, and you can lose everything.
@@ -225,9 +297,10 @@ Again: this is not financial advice, and you can lose everything.
 pnpm install
 pnpm test            # risk layer (every cap, gate and forced move, both directions), setup, redaction, indicators, ledger
 pnpm universe        # the tradable coin list from live public data (no keys)
-pnpm snapshot        # each style's menu and snapshot from live data (no Jev call)
+pnpm snapshot        # each style's menu and snapshot from live data (no model call)
 pnpm e2e:fake-jev    # the whole engine on paper with a random fake Jev (no spend)
-pnpm dev             # the real engine on paper, with real Jev calls (Setup runs if there is no key)
+pnpm dev             # the real engine on paper, with real model calls (Setup runs if there is no key)
+pnpm effective-config .env --diff strategies/ARGON_INTENDED.json   # what the engine will run, secrets as presence only
 
 cd dashboard && pnpm install && pnpm dev    # http://127.0.0.1:5173, proxied to the engine
 ```
@@ -248,6 +321,6 @@ logger and the event stream redact anything that looks like a key, an IP address
 ## Credits
 
 Built by Mike on the Creator Magic YouTube channel, in the video "I gave three AI bees $1,000".
-Hosted on [Hostinger](https://www.hostg.xyz/aff_c?offer_id=815&aff_id=202403&url=https%3A%2F%2Fwww.hostinger.com%2Fdocker-hosting%3Fcompose_url%3Dhttps%3A%2F%2Fraw.githubusercontent.com%2Fimikerussell%2Fbeebots%2Fmain%2Fdocker-compose.yml%26utm_medium%3Daffiliate%26utm_source%3Daff%7Baffiliate_id%7D%26utm_campaign%3D%7Boffer_id%7D%26session%3D%7Btransaction_id%7D). Decisions by [Jev](https://typesafe.ai).
+Hosted on [Hostinger](https://www.hostg.xyz/aff_c?offer_id=815&aff_id=202403&url=https%3A%2F%2Fwww.hostinger.com%2Fdocker-hosting%3Fcompose_url%3Dhttps%3A%2F%2Fraw.githubusercontent.com%2Fimikerussell%2Fbeebots%2Fmain%2Fdocker-compose.yml%26utm_medium%3Daffiliate%26utm_source%3Daff%7Baffiliate_id%7D%26utm_campaign%3D%7Boffer_id%7D%26session%3D%7Btransaction_id%7D). Decisions by [Gemini 4 Argon](https://ai.google.dev/gemini-api/docs) or [Jev](https://typesafe.ai).
 
 MIT licence. No warranty. Not financial advice.

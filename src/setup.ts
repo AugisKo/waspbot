@@ -1,4 +1,4 @@
-// First-run Setup. With no Jev key anywhere, the engine starts in setup mode: no trading, just the dashboard's Setup
+// First-run Setup. With no chooser key (Gemini or Jev) anywhere, the engine starts in setup mode: no trading, just the dashboard's Setup
 // page. The page is public (a fresh VPS), and there is no code to dig out of a log, so it is protected by:
 //  - first come, first served: once saved, Setup is closed for good (until the owner deletes settings.json);
 //  - a setup window: SETUP_WINDOW_MIN after the engine starts (default 120), Setup locks until the container restarts;
@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import { BEES } from "./config.js";
 import { hashPassword, MAX_PASSWORD, MIN_PASSWORD, readJson, send } from "./gate.js";
-import { checkJevKey } from "./jev.js";
+import { checkGeminiKey, checkJevKey } from "./jev.js";
 import { log } from "./log.js";
 import { BIZZY_BREAKOUT_COINS } from "./bees/bizzy.js";
 import { BREEZY_COINS } from "./bees/breezy.js";
@@ -34,6 +34,7 @@ const MAX_BODY = 32 * 1024;
 export interface SetupOpts {
   settingsPath: string;
   jevModel: string;
+  geminiModel: string;
   openai: { apiKey?: string; textModel: string; imageModel: string };
   /** Reference portraits for the image model (the default bee art). */
   refDir: string;
@@ -46,6 +47,8 @@ export interface SetupOpts {
   now?: () => number;
   /** Injectable for tests; defaults to one real Jev call. */
   checkJev?: (key: string, model: string) => Promise<string | null>;
+  /** Injectable for tests; defaults to one free Gemini model lookup. */
+  checkGemini?: (key: string, model: string) => Promise<string | null>;
   /** Injectable for tests; default: OKX's live crypto X-Perp list. */
   listCoins?: () => Promise<string[]>;
   /** Injectable for tests; default: one OpenAI text call. */
@@ -115,8 +118,16 @@ const SetupBee = BeeSchema.extend({
   look: z.string().trim().min(3).max(400),
   image: z.literal(true, { errorMap: () => ({ message: "every bee needs its portrait" }) }),
 });
+const optKey = z
+  .string()
+  .trim()
+  .transform((v) => v || undefined)
+  .pipe(z.string().min(8).optional())
+  .optional();
 const SaveBody = z.object({
-  jevKey: z.string().trim().min(8),
+  /** The chooser's key: Gemini 4 Argon (preferred) or Jev. At least one. */
+  geminiKey: optKey,
+  jevKey: optKey,
   openaiKey: z.string().trim().min(8).optional(),
   accept: Accept,
   bees: z.array(SetupBee).length(3),
@@ -136,6 +147,7 @@ export class Setup {
   private coins: { at: number; list: string[] } | null = null;
 
   private checkJev: (key: string, model: string) => Promise<string | null>;
+  private checkGemini: (key: string, model: string) => Promise<string | null>;
   private listCoins: () => Promise<string[]>;
   private design: (key: string, model: string, description: string, coins: string[]) => Promise<BeeDesign>;
   private paint: (key: string, model: string, refDir: string, name: string, look: string) => Promise<Buffer>;
@@ -144,6 +156,7 @@ export class Setup {
     this.now = o.now ?? Date.now;
     this.openedAt = this.now();
     this.checkJev = o.checkJev ?? checkJevKey;
+    this.checkGemini = o.checkGemini ?? ((key, model) => checkGeminiKey(key, model));
     this.listCoins = o.listCoins ?? (() => fetchXperpCoins(o.okxApiBase));
     this.design = o.design ?? designBee;
     this.paint = o.paint ?? paintBee;
@@ -249,6 +262,13 @@ export class Setup {
         return send(res, err ? 400 : 200, err ? { error: err } : { ok: true });
       }
 
+      case "/setup/check-gemini": {
+        const key = String(body.key ?? "").trim();
+        if (key.length < 8) return send(res, 400, { error: "Paste your Gemini API key." });
+        const err = await this.checkGemini(key, this.o.geminiModel);
+        return send(res, err ? 400 : 200, err ? { error: err } : { ok: true });
+      }
+
       case "/setup/check-openai": {
         const key = this.openaiKey(body);
         if (!key) return send(res, 400, { error: "Paste your OpenAI API key." });
@@ -302,8 +322,9 @@ export class Setup {
         if (!b.openaiKey && !this.o.openai.apiKey) return send(res, 400, { error: "Your bees need an OpenAI key (it designs and paints them)." });
         const missing = BEES.filter((slot) => imagePath(this.o.settingsPath, slot) === null);
         if (missing.length) return send(res, 400, { error: "Every bee needs its portrait before you start." });
-        const jevErr = await this.checkJev(b.jevKey, this.o.jevModel);
-        if (jevErr) return send(res, 400, { error: jevErr });
+        if (!b.geminiKey && !b.jevKey) return send(res, 400, { error: "Your bees need a Gemini key (or a Jev key) to make their calls." });
+        const keyErr = b.geminiKey ? await this.checkGemini(b.geminiKey, this.o.geminiModel) : await this.checkJev(b.jevKey!, this.o.jevModel);
+        if (keyErr) return send(res, 400, { error: keyErr });
         // The page's coins and style are re-checked here: coins against OKX's list (when it can be read), the style
         // against the coins.
         const known = await this.coinList().catch(() => null);
@@ -313,7 +334,8 @@ export class Setup {
         });
         const s: Settings = {
           version: 1,
-          jevKey: b.jevKey,
+          ...(b.geminiKey ? { geminiKey: b.geminiKey } : {}),
+          ...(b.jevKey ? { jevKey: b.jevKey } : {}),
           ownerPasswordHash: hashPassword(b.ownerPassword),
           ...(b.openaiKey ? { openaiKey: b.openaiKey } : {}),
           acceptedRiskAt: Date.now(),

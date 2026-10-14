@@ -6,7 +6,7 @@ import type { CoinStats, Instrument, MarketView, Ticker, TrendStats } from "../s
 export const NOW = Date.UTC(2026, 8, 24, 12, 0, 0);
 
 export function testConfig(env: Record<string, string> = {}): Config {
-  return loadConfig({ TYPESAFE_API_KEY: "test-key", ...env });
+  return loadConfig({ ...env });
 }
 
 export function coin(coinName: string, over: Partial<CoinStats> = {}, px = 100): CoinStats {

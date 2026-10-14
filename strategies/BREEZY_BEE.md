@@ -1,6 +1,6 @@
 # Breezy Bee: the calculated one
 
-> **Live rules since 2026-09-24:** size = max(0.5, |score|/9) x max notional, under a 60% annualised vol cap (was |score|/9 under 25%). So she always holds at least 1x equity. SIZE_UP is offered when she is more than 25% of max below target. 3 trades a day, fee budget $1.00.
+> **Live rules since 2026-10-13 (Gemini 4 Argon's rewrite):** she opens only when |score| >= 3 and the 24h return does not fight the trend (|score| >= 5 skips that check), and otherwise sits in cash; she is never forced in. Size = |score|/9 x max notional under a 40% annualised vol cap, with no 1x floor (minimum $10). Opens need p >= 0.55 and conviction >= 1. ADD_TO_WINNER only above +1R; code tops her up only above +0.5R and when she is more than 35% of max below target, sized on realised cash. Stop 2 x ATR(4h), the Donchian midpoint trail, profit lock +2% keeps 45% and +4% keeps 65%. TRIM_HALF on a 3-point score drop (once per drop), CLOSE_TREND when the score turns against her, a flip or switch only on an opposite |score| >= 5. 2 trades a day, 4h cooldown, fee budget $0.75.
 
 > Cool, serene, sunglasses, a chess knight under one arm. Patient, measured, always wins in the end.
 

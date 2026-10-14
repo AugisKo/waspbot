@@ -8,7 +8,7 @@ import { MarketFeed } from "../market/data.js";
 import { createPublicApi } from "../okx/public.js";
 import { buildSnapshot } from "../snapshot.js";
 
-const cfg = loadConfig({ ...process.env, TYPESAFE_API_KEY: process.env.TYPESAFE_API_KEY || "unused", DRY_RUN: "true" });
+const cfg = loadConfig({ ...process.env, DRY_RUN: "true" });
 const feed = new MarketFeed(
   createPublicApi(cfg.okx.apiBase),
   { min24hVolUsd: cfg.universe.min24hVolUsd, allowNonCrypto: false, spreadGateBps: Math.max(...BEES.map((b) => cfg.bees[b].spreadGateBps)), trendCoins: [...BREEZY_COINS] },

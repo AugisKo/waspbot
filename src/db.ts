@@ -38,6 +38,11 @@ CREATE TABLE IF NOT EXISTS bee_state (bee TEXT PRIMARY KEY, json TEXT NOT NULL, 
 CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, type TEXT NOT NULL, json TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+-- The chooser's spend ledger (Gemini). A row is written BEFORE each paid call, charged at its worst case, and settled to
+-- the billed amount after; a call cut off by a crash or restart stays charged at the worst case. Additive: older code
+-- ignores the table, so going back to an older version keeps this DB.
+CREATE TABLE IF NOT EXISTS chooser_spend (id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, bee TEXT NOT NULL, reserved_usd REAL NOT NULL, charged_usd REAL NOT NULL, settled INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS chooser_spend_ts ON chooser_spend(ts);
 `;
 
 export interface DecisionRow {
@@ -217,6 +222,23 @@ export class Db {
 
   pruneEvents(olderThanTs: number): void {
     this.raw.prepare(`DELETE FROM events WHERE ts < ?`).run(olderThanTs);
+  }
+
+  /** Chooser ledger: reserve a paid call's worst case before it is sent. Returns the row id to settle. */
+  reserveChooserSpend(ts: number, bee: string, usd: number): number {
+    const r = this.raw.prepare(`INSERT INTO chooser_spend (ts, bee, reserved_usd, charged_usd) VALUES (?, ?, ?, ?)`).run(ts, bee, usd, usd);
+    return Number(r.lastInsertRowid);
+  }
+
+  /** Chooser ledger: the amount actually charged for a reserved call (the worst case when billing is unknown). */
+  settleChooserSpend(id: number, usd: number): void {
+    this.raw.prepare(`UPDATE chooser_spend SET charged_usd = ?, settled = 1 WHERE id = ?`).run(usd, id);
+  }
+
+  /** Chooser spend since `ts`: settled charges plus unsettled reservations at their worst case. */
+  chooserSpendSince(ts: number): number {
+    const r = this.raw.prepare(`SELECT COALESCE(SUM(charged_usd), 0) AS s FROM chooser_spend WHERE ts >= ?`).get(ts) as { s: number };
+    return r.s;
   }
 
   jevSpendSince(ts: number): number {

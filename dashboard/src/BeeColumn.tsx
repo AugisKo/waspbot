@@ -58,9 +58,11 @@ interface Props {
   rank: number;
   gap: number | null;
   flash: FeedState["flashes"][BeeName];
+  /** The chooser's short name ("Argon", "Jev", "Code"). */
+  chooser: string;
 }
 
-export function BeeColumn({ name, bee, curve, baseline, rank, gap, flash }: Props) {
+export function BeeColumn({ name, bee, curve, baseline, rank, gap, flash, chooser }: Props) {
   const meta = BEE_META[name];
   const p = bee?.position ?? null;
   const flashing = flash && Date.now() - flash.at < 2500;
@@ -131,15 +133,15 @@ export function BeeColumn({ name, bee, curve, baseline, rank, gap, flash }: Prop
 
       <div className="last">
         <div className="last-head">
-          <span className="eyebrow">Jev’s last call</span>
+          <span className="eyebrow">{chooser}’s last call</span>
           {bee?.last?.latencyMs != null && <span className="dim num">{bee.last.latencyMs} ms</span>}
         </div>
         {cap === "trade_cap" || cap === "fee_budget" ? (
-          <div className="dim">sitting out while benched: nothing Jev picks could be acted on until 00:00 UTC</div>
+          <div className="dim">sitting out while benched: nothing {chooser} picks could be acted on until 00:00 UTC</div>
         ) : bee?.last?.required ? (
           <div className="required-call">
             <span className="required-choice">{bee.last.choice}</span>
-            <span className="dim">required by the rules · Jev not asked</span>
+            <span className="dim">required by the rules · {chooser} not asked</span>
           </div>
         ) : bee?.last?.top3.length ? (
           <ProbBars top3={bee.last.top3} choice={bee.last.choice} color={meta.color} big />
@@ -164,7 +166,7 @@ export function BeeColumn({ name, bee, curve, baseline, rank, gap, flash }: Prop
           {signed(bee?.totals.fundingUsd ?? 0)}
         </div>
         <div>
-          <span className="eyebrow">Jev</span>
+          <span className="eyebrow">{chooser}</span>
           {money(bee?.totals.jevUsd ?? 0, 4)}
         </div>
         <div>

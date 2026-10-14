@@ -1,6 +1,6 @@
 # Bizzy Bee: the grinder
 
-> **Live rules since 2026-09-24:** one Larry Williams volatility breakout a day. When BTC, ETH, SOL or HYPE trades above today's UTC open + 0.5 x yesterday's range, Jev may take it long at full size (2x). She rides it to the UTC day close. Her stop is back below today's open, and she can cut it while it's losing. 1 trade a day, fee budget $1.00. She is never forced in. The fade strategy below is her previous design, kept for reference.
+> **Live rules since 2026-10-13 (Gemini 4 Argon's rewrite):** back to the grinder, both ways. On the top 8 liquid majors (BTC, ETH, SOL, HYPE, XRP, SUI, DOGE, LINK, spread at most 5 bp) she fades stretched moves: FADE_LONG when RSI(14) < 30 and %B < 0, FADE_SHORT when RSI(14) > 70 and %B > 1, with funding z vetoes at +/-1.5. She also takes a confirmed daily breakout (BREAKOUT_<coin>) on BTC, ETH, SOL or HYPE: through today's open + 0.5 x yesterday's range, 1h return > 0, RSI <= 78, funding z <= 1.5. Size 1x equity (0.5 of max). TAKE_PROFIT at the middle band or +1R, CUT_LOSS while losing (once held 20 min, or at once at -0.5R), 2 x ATR(15m) stop, profit lock +1.2% keeps 50% and +2.5% keeps 70%, 4h time stop. Never forced in. 4 trades a day, 30 min cooldown, fee budget $1.20. The once-a-day breakout (2026-09-24 to 2026-10-13) is retired.
 
 > Tiny round glasses, gaming headset, sweatband, coffee cup, speed lines. Never stops, does everything fast.
 
