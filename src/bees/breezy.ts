@@ -1,6 +1,6 @@
 // breezy-bee: ensemble Donchian trend following on BTC + ETH, 4h bars.
 // Gated at |score| >= 3 (stays flat in chop), sized proportionally under a 40% vol cap
-// with no forced 1x floor, safe realised-cash rebalance, and neverForce.
+// with no forced 1x floor, safe realised-cash rebalance.
 import type { CoinStats } from "../market/types.js";
 import { MARGIN_HEADROOM, maxNotionalUsd, positionNotional, r2 } from "./common.js";
 import type { BeeBrain, BeeContext, Intent, Menu, Side } from "./types.js";
@@ -60,7 +60,6 @@ export const BREEZY_PROFIT_LOCK = [
 
 export const breezy: BeeBrain = {
   id: "breezy",
-  neverForce: true,
   requiresStrictSetup: true,
   profitLock: BREEZY_PROFIT_LOCK,
   protectAdds: true,
@@ -178,9 +177,6 @@ export const breezy: BeeBrain = {
     return gap > 0.35 * max ? { kind: "add", sizeFrac: gap / max } : null;
   },
 
-  forcedEntry() {
-    return null;
-  },
 
   sizeFrac(intent, _conviction, ctx) {
     const max = maxNotionalUsd(ctx);

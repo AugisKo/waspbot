@@ -79,6 +79,10 @@ export const SettingsSchema = z.object({
   geminiKey: z.string().trim().min(8).optional(),
   jevKey: z.string().trim().min(8).optional(),
   openaiKey: z.string().trim().min(8).optional(),
+  /** Claude (Anthropic) key for the chooser, the news digest and web search. */
+  anthropicKey: z.string().trim().min(8).optional(),
+  /** The decision engine picked on Setup. Absent = "llm" with a model key, else "rules". */
+  engine: z.enum(["rules", "llm"]).optional(),
   /** The owner password, as a salted scrypt hash (gate.ts). Absent in files saved before it existed. */
   ownerPasswordHash: z.string().startsWith("scrypt$").optional(),
   /** When the operator ticked the risk statements on the Setup page. */

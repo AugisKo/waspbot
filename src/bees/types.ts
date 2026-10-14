@@ -1,6 +1,7 @@
 import type { BeeId, BeeKnobs, Config } from "../config.js";
 import type { StyleId } from "../settings.js";
 import type { CoinStats, MarketView } from "../market/types.js";
+import type { EntryFeatures } from "../knowledge/memory.js";
 
 export type Side = "long" | "short";
 
@@ -22,6 +23,12 @@ export interface Position {
   peakPx?: number | null;
   /** breezy: ensemble score at entry, for TRIM_HALF. */
   entryScore?: number;
+  /** 1R as sized at entry (riskUsd shrinks on trims; trade memory measures the outcome against this). */
+  risk0Usd?: number;
+  /** Net P&L of this trade so far: realised on every reduce, minus every fee paid on it. */
+  tradeNetUsd?: number;
+  /** The market picture at entry (trade memory). */
+  entryFeatures?: EntryFeatures;
 }
 
 export type CapReason = "trade_cap" | "fee_budget" | "loss_stop" | "retired";
@@ -95,8 +102,6 @@ export interface BeeBrain {
   coinSnapshot(s: CoinStats, ctx: BeeContext): Record<string, number | string | null>;
   /** Coins shown in the snapshot (instIds). */
   snapshotCoins(ctx: BeeContext): string[];
-  /** Drama rule 2: what the code forces when this bee has been flat too long. null = nothing possible. */
-  forcedEntry(ctx: BeeContext): Extract<Intent, { kind: "open" }> | null;
   /** Fraction of max notional for a chosen open, given conviction level 0..3. */
   sizeFrac(intent: Extract<Intent, { kind: "open" | "switch" }>, conviction: number, ctx: BeeContext): number;
   /** Stop price for a new position (code decides, not Jev). */
@@ -120,8 +125,6 @@ export interface BeeBrain {
   timeStopMinutes?: (ctx: BeeContext) => number;
   /** Code-side sizing: an add that brings an undersized position back to target (fires when Jev holds). */
   rebalance?: (ctx: BeeContext) => Extract<Intent, { kind: "add" }> | null;
-  /** This bee waits for its setup instead of being forced in when flat (drama rule 2 does not apply). */
-  neverForce?: boolean;
   /** Status line while flat with nothing on the menu (e.g. "waiting for a breakout"). */
   idleStatus?: (ctx: BeeContext) => string;
 }

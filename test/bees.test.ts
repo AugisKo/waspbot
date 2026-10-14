@@ -11,7 +11,7 @@ import { bee, coin, ctx, NOW, position, testConfig, trend, view } from "./fixtur
 
 const HOLDS = ["HOLD", "HOLD_WINNER", "RIDE"];
 
-describe("no forced entries (neverForce across all three bees)", () => {
+describe("no forced entries (every wasp waits for its own setup)", () => {
   const v = view([
     coin("BTC", { trend: trend({ score: 1 }), pctB: 0.5, rsi14: 50, ret24hPct: 0.2 }, 80000),
     coin("ETH", { trend: trend({ score: -1 }), pctB: 0.5, rsi14: 50, ret24hPct: -0.3 }, 2700),
@@ -19,8 +19,6 @@ describe("no forced entries (neverForce across all three bees)", () => {
   ]);
   for (const [id, brain] of [["bizzy", bizzy], ["breezy", breezy], ["boozy", boozy]] as const) {
     it(`${id}: never forces an entry when flat in chop, even after hours flat`, () => {
-      expect(brain.neverForce).toBe(true);
-      expect(brain.forcedEntry(ctx(id, bee(id), v))).toBeNull();
       const m = brain.menu(ctx(id, bee(id), v));
       expect(Object.keys(m)).toEqual([]);
       const res = applyRisk({

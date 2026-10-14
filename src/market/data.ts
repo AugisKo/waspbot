@@ -4,6 +4,7 @@ import { safeError } from "../redact.js";
 import { atr, bollinger, macd, pctChange, rsi, trendStats, zScore } from "./indicators.js";
 import type { Candle, CoinStats, Instrument, MarketView, Ticker } from "./types.js";
 import { gateUniverse } from "./universe.js";
+import { classifyRegime } from "./regime.js";
 
 export interface NewsReading {
   /** Hourly mention counts, oldest first (last = current hour). */
@@ -61,6 +62,7 @@ export function computeStats(inst: Instrument, t: Ticker, c15: Candle[], c1h: Ca
     oiChg1hPct: null,
     newsZ: null,
     sentiment: null,
+    regime: confirmed1h.length >= 40 ? classifyRegime(confirmed1h) : null,
   };
 }
 

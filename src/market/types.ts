@@ -1,4 +1,5 @@
 import type { Kind } from "./kinds.js";
+import type { Regime } from "./regime.js";
 
 export interface Instrument {
   instId: string;
@@ -69,6 +70,8 @@ export interface CoinStats {
   // news (kit news module; null when unavailable)
   newsZ: number | null;
   sentiment: number | null;
+  /** Market regime from 1h bars (market/regime.ts); null until there is enough history. */
+  regime?: Regime | null;
   // 4h trend (breezy's coins only)
   trend?: TrendStats;
   /** Larry Williams volatility breakout (bizzy): today's UTC open + k x yesterday's range, from 1h bars. */

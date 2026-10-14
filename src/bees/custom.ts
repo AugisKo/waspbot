@@ -63,10 +63,6 @@ export function customBrain(base: BeeBrain, o: CustomRules): BeeBrain {
       }
       return m;
     },
-    forcedEntry: (ctx) => {
-      const f = base.forcedEntry(narrow(ctx));
-      return f && allowed(f.instId) ? f : null;
-    },
     sizeFrac: (intent, conviction, ctx) => base.sizeFrac(intent, conviction, narrow(ctx)),
     ...(base.idleStatus ? { idleStatus: (ctx: BeeContext) => base.idleStatus!(narrow(ctx)) } : {}),
     ...(base.rebalance ? { rebalance: (ctx: BeeContext) => base.rebalance!(narrow(ctx)) } : {}),

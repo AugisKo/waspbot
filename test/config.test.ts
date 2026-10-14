@@ -133,9 +133,9 @@ describe("config", () => {
 
   it("defaults match the strategy files", () => {
     const c = loadConfig({ GEMINI_API_KEY: "g" });
-    expect(c.bees.bizzy).toMatchObject({ maxTradesPerDay: 4, feeBudgetUsdDay: 1.2, spreadGateBps: 5, cooldownMinutes: 30, stopAtrMult: 2, maxFlatMinutes: 1440 });
-    expect(c.bees.boozy).toMatchObject({ maxTradesPerDay: 3, feeBudgetUsdDay: 1.5, spreadGateBps: 8, cooldownMinutes: 60, stopAtrMult: 2.5, maxFlatMinutes: 1440 });
-    expect(c.bees.breezy).toMatchObject({ maxTradesPerDay: 2, feeBudgetUsdDay: 0.75, spreadGateBps: 5, cooldownMinutes: 240, stopAtrMult: 2, maxFlatMinutes: 1440 });
+    expect(c.bees.bizzy).toMatchObject({ maxTradesPerDay: 4, feeBudgetUsdDay: 1.2, spreadGateBps: 5, cooldownMinutes: 30, stopAtrMult: 2 });
+    expect(c.bees.boozy).toMatchObject({ maxTradesPerDay: 3, feeBudgetUsdDay: 1.5, spreadGateBps: 8, cooldownMinutes: 60, stopAtrMult: 2.5 });
+    expect(c.bees.breezy).toMatchObject({ maxTradesPerDay: 2, feeBudgetUsdDay: 0.75, spreadGateBps: 5, cooldownMinutes: 240, stopAtrMult: 2 });
     expect(c.breezy.minOpenProb).toBe(0.55);
     expect(c.bizzy).toMatchObject({ sizeFraction: 0.5, timeStopMinutes: 240 });
     expect(c.tickMs).toBe(10_000);

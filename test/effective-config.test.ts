@@ -52,18 +52,14 @@ describe("effective-config tool", () => {
   });
 
   it("an old .env copied from the previous .env.example is caught knob by knob", () => {
-    const old = { GEMINI_API_KEY: SECRETS.GEMINI_API_KEY, BIZZY_MAX_TRADES_PER_DAY: "1", BOOZY_SPREAD_GATE_BPS: "15", BOOZY_MAX_FLAT_MINUTES: "0", BREEZY_MIN_OPEN_PROB: "0.7", MAX_FLAT_MINUTES: "30" };
+    const old = { GEMINI_API_KEY: SECRETS.GEMINI_API_KEY, BIZZY_MAX_TRADES_PER_DAY: "1", BOOZY_SPREAD_GATE_BPS: "15", BREEZY_MIN_OPEN_PROB: "0.7" };
     const eff = effectiveConfig(composeEnv(old));
     expect(diffConfig(eff, intended).map((d) => d.knob).sort()).toEqual([
-      "bees.bizzy.maxFlatMinutes",
       "bees.bizzy.maxTradesPerDay",
-      "bees.boozy.maxFlatMinutes",
       "bees.boozy.spreadGateBps",
-      "bees.breezy.maxFlatMinutes",
       "breezy.minOpenProb",
-      "risk.maxFlatMinutes",
     ]);
-    expect(eff.pinnedInEnv).toEqual(expect.arrayContaining(["BIZZY_MAX_TRADES_PER_DAY", "BOOZY_SPREAD_GATE_BPS", "MAX_FLAT_MINUTES"]));
+    expect(eff.pinnedInEnv).toEqual(expect.arrayContaining(["BIZZY_MAX_TRADES_PER_DAY", "BOOZY_SPREAD_GATE_BPS"]));
   });
 
   it("a Jev-only or keyless install shows the chooser as a difference, not an error, on paper", () => {

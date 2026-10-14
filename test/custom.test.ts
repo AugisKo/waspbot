@@ -20,11 +20,10 @@ describe("owner-designed bees", () => {
     expect(Object.keys(BRAINS.boozy.menu(c))).toContain("APE_PEPE");
     expect(Object.keys(trump.menu(c))).toEqual(["APE_TRUMP", "WAIT"]); // a flat menu with setups offers WAIT
     expect(trump.universe(c).map((id) => id.split("-")[0])).toEqual(["TRUMP"]);
-    expect(trump.forcedEntry(c)).toBeNull(); // every style waits for its own setup now (neverForce)
     expect(trump.snapshotCoins(c).map((id) => id.split("-")[0])).toEqual(["TRUMP"]);
   });
 
-  it("drops any move that names another coin, and forced entries outside the list become null", () => {
+  it("drops any move that names another coin", () => {
     const m = market();
     const pepe = m.stats.get("PEPE-USD_UM_XPERP-310404")!;
     // Holding PEPE (e.g. adopted from the exchange): managing it is fine, switching to another coin is not.
@@ -35,7 +34,6 @@ describe("owner-designed bees", () => {
     }
     expect(menu.RIDE).toBeDefined();
     const noTrump = view([coin("PEPE"), coin("DOGE")]);
-    expect(trump.forcedEntry(ctx("boozy", bee("boozy"), noTrump))).toBeNull();
     expect(trump.menu(ctx("boozy", bee("boozy"), noTrump))).toEqual({});
   });
 
