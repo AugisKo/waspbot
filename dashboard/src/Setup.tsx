@@ -322,7 +322,7 @@ export function Setup() {
             <h2>Who makes the calls</h2>
             {chooser === "gemini" ? (
               <p>
-                <b>Gemini 4 Argon</b> picks each bee's next move. Get a key in{" "}
+                <b>Gemini 4 Argon</b> picks the bees' moves when it is asked (code picks when it is not). Get a key in{" "}
                 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">
                   Google AI Studio
                 </a>{" "}
@@ -334,11 +334,11 @@ export function Setup() {
               </p>
             ) : (
               <p>
-                <b>Jev</b> (from TypeSafe AI) picks each bee's next move. Get a key at{" "}
+                <b>Jev</b> (from TypeSafe AI) picks the bees' moves when it is asked (code picks when it is not). Get a key at{" "}
                 <a href="https://console.typesafe.ai/keys" target="_blank" rel="noopener">
                   console.typesafe.ai/keys
                 </a>
-                . Jev charges per decision. The engine caps Jev spending at $2 a day by default.{" "}
+                . Jev charges per decision. The engine stops calling Jev at about $2 a day by default (a soft limit: calls in flight can go a little over).{" "}
                 <button className="link" onClick={() => (setChooser("gemini"), setModelKey(""), setKeyOk(false))}>
                   Use Gemini 4 Argon instead
                 </button>

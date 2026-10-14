@@ -1,8 +1,8 @@
 {
   "name": "beebots",
-  "version": "2026.10.2",
+  "version": "2026.10.14",
   "private": true,
-  "description": "Three AI trading bees on OKX EEA X-Perps, every decision made by Gemini 4 Argon or Jev",
+  "description": "Three AI trading bees on OKX EEA X-Perps, picked by Gemini 4 Argon or Jev with a code fallback",
   "type": "module",
   "engines": {
     "node": ">=22.13"

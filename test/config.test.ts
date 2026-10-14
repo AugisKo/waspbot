@@ -41,6 +41,35 @@ describe("config", () => {
     expect(() => loadConfig({ GEMINI_TIMEOUT_MS: "0" })).toThrow(/GEMINI_TIMEOUT_MS/);
   });
 
+  it("rejects zero, negative and non-finite Gemini prices, naming the variable but never the value", () => {
+    const key = { GEMINI_API_KEY: "fake-key", DRY_RUN: "true" };
+    for (const name of ["GEMINI_USD_PER_MTOK", "GEMINI_USD_PER_MTOK_OUT"]) {
+      for (const v of ["0", "-1", "-0.000001", "Infinity", "-Infinity", "NaN", "abc"]) {
+        let msg = "";
+        try {
+          loadConfig({ ...key, [name]: v });
+        } catch (err) {
+          msg = (err as Error).message;
+        }
+        expect(msg, `${name}=${v}`).toContain(name);
+        if (v !== "0") expect(msg).not.toContain(v.replace(/^-/, ""));
+      }
+    }
+    // Both at once: both named.
+    expect(() => loadConfig({ ...key, GEMINI_USD_PER_MTOK: "0", GEMINI_USD_PER_MTOK_OUT: "-1" })).toThrow(/GEMINI_USD_PER_MTOK:[\s\S]*GEMINI_USD_PER_MTOK_OUT/);
+    // Valid: positive and finite, including the launch prices.
+    expect(loadConfig({ ...key, GEMINI_USD_PER_MTOK: "2", GEMINI_USD_PER_MTOK_OUT: "10" }).jev).toMatchObject({ usdPerMTok: 2, usdPerMTokOut: 10 });
+    expect(loadConfig({ ...key, GEMINI_USD_PER_MTOK: "0.0001", GEMINI_USD_PER_MTOK_OUT: "0.0001" }).jev.usdPerMTok).toBe(0.0001);
+  });
+
+  it("with Jev in use, its price must be above 0 and its cap 0 or more", () => {
+    expect(() => loadConfig({ TYPESAFE_API_KEY: "k", JEV_USD_PER_MTOK: "0" })).toThrow(/JEV_USD_PER_MTOK/);
+    expect(() => loadConfig({ TYPESAFE_API_KEY: "k", JEV_USD_PER_MTOK: "-1" })).toThrow(/JEV_USD_PER_MTOK/);
+    expect(() => loadConfig({ TYPESAFE_API_KEY: "k", JEV_DAILY_USD_CAP: "-1" })).toThrow(/JEV_DAILY_USD_CAP/);
+    expect(() => loadConfig({ TYPESAFE_API_KEY: "k", JEV_TIMEOUT_MS: "0" })).toThrow(/JEV_TIMEOUT_MS/);
+    expect(loadConfig({ TYPESAFE_API_KEY: "k", JEV_DAILY_USD_CAP: "0" }).jev.dailyUsdCap).toBe(0);
+  });
+
   it("demo needs all three demo keys and lists the missing NAMES only", () => {
     const env = { TYPESAFE_API_KEY: "k", DRY_RUN: "false", MODE: "demo", BEE1_OKX_DEMO_API_KEY: "secret-value-1" };
     let msg = "";

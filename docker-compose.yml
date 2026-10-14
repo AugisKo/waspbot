@@ -30,7 +30,7 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      # How often each bee is looked at (stops, caps), and the hard daily caps on decision spend in USD.
+      # How often each bee is looked at (stops, caps), and the daily caps on decision spend in USD (Jev's is soft).
       # Gemini is asked at most once a minute per bee whatever TICK_MS is (GEMINI_MIN_INTERVAL_MS).
       TICK_MS: ${TICK_MS:-10000}
       GEMINI_DAILY_USD_CAP: ${GEMINI_DAILY_USD_CAP:-3}

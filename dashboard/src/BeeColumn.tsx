@@ -1,5 +1,5 @@
 import { EquityChart } from "./EquityChart";
-import { BEE_META, type BeeName, type PublicBee } from "./types";
+import { BEE_META, byCode, fallbackText, type BeeName, type PublicBee } from "./types";
 import type { Curve, FeedState } from "./useFeed";
 
 const CAP_LABEL: Record<string, string> = { trade_cap: "BENCHED", fee_budget: "BENCHED", loss_stop: "SENT HOME", retired: "RETIRED" };
@@ -133,11 +133,16 @@ export function BeeColumn({ name, bee, curve, baseline, rank, gap, flash, choose
 
       <div className="last">
         <div className="last-head">
-          <span className="eyebrow">{chooser}’s last call</span>
+          <span className="eyebrow">{bee?.last?.decidedBy === "gemini" || bee?.last?.decidedBy === "jev" ? `${chooser}’s last call` : "Last call"}</span>
           {bee?.last?.latencyMs != null && <span className="dim num">{bee.last.latencyMs} ms</span>}
         </div>
         {cap === "trade_cap" || cap === "fee_budget" ? (
           <div className="dim">sitting out while benched: nothing {chooser} picks could be acted on until 00:00 UTC</div>
+        ) : byCode(bee?.last) ? (
+          <div className="required-call">
+            <span className="required-choice">{bee!.last!.choice}</span>
+            <span className="dim">code chose · {fallbackText(bee!.last!.fallbackReason, chooser)}</span>
+          </div>
         ) : bee?.last?.required ? (
           <div className="required-call">
             <span className="required-choice">{bee.last.choice}</span>

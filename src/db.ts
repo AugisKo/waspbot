@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS bee_state (bee TEXT PRIMARY KEY, json TEXT NOT NULL, 
 CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, type TEXT NOT NULL, json TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
--- The chooser's spend ledger (Gemini). A row is written BEFORE each paid call, charged at its worst case, and settled to
+-- The chooser's spend ledger (Gemini and Jev). A row is written BEFORE each paid call, charged at its worst case, and settled to
 -- the billed amount after; a call cut off by a crash or restart stays charged at the worst case. Additive: older code
 -- ignores the table, so going back to an older version keeps this DB.
 CREATE TABLE IF NOT EXISTS chooser_spend (id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, bee TEXT NOT NULL, reserved_usd REAL NOT NULL, charged_usd REAL NOT NULL, settled INTEGER NOT NULL DEFAULT 0);
@@ -59,6 +59,10 @@ export interface DecisionRow {
   inputTokens: number | null;
   jevCostUsd: number;
   jevError: string | null;
+  /** Who actually made the call: gemini, jev, code (the code chooser), rules; null = no chooser was asked. */
+  decidedBy?: string | null;
+  /** Why the code chooser answered (no_key, cap, reservation, backoff, timeout, error, off_menu, single_option, paced). */
+  fallbackReason?: string | null;
   action: unknown;
   vetoedBy: string | null;
   forcedBy: string | null;
@@ -110,19 +114,23 @@ export class Db {
     this.raw = new DatabaseSync(path);
     this.raw.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;");
     this.raw.exec(SCHEMA);
+    // Added columns (older DBs). Additive and nullable: older code names its columns on insert, so it keeps working.
+    const cols = new Set((this.raw.prepare(`PRAGMA table_info(decisions)`).all() as Array<{ name: string }>).map((c) => c.name));
+    if (!cols.has("decided_by")) this.raw.exec(`ALTER TABLE decisions ADD COLUMN decided_by TEXT`);
+    if (!cols.has("fallback_reason")) this.raw.exec(`ALTER TABLE decisions ADD COLUMN fallback_reason TEXT`);
   }
 
   insertDecision(d: DecisionRow): number {
     const r = this.raw
       .prepare(
         `INSERT INTO decisions (bee, ts, state_hash, state_json, menu_json, choice, probabilities_json, confidence, conviction,
-          latency_ms, input_tokens, jev_cost_usd, jev_error, action_json, vetoed_by, forced_by, status)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          latency_ms, input_tokens, jev_cost_usd, jev_error, action_json, vetoed_by, forced_by, status, decided_by, fallback_reason)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         d.bee, d.ts, d.stateHash, d.stateJson, d.menuJson, d.choice, d.probabilities ? JSON.stringify(d.probabilities) : null,
         d.confidence, d.conviction, d.latencyMs, d.inputTokens, d.jevCostUsd, d.jevError, JSON.stringify(d.action),
-        d.vetoedBy, d.forcedBy, d.status,
+        d.vetoedBy, d.forcedBy, d.status, d.decidedBy ?? null, d.fallbackReason ?? null,
       );
     return Number(r.lastInsertRowid);
   }

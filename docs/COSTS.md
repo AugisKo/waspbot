@@ -4,8 +4,8 @@ Stake: **$1,000**, split **$333** per bee. Max notional per bee at 2x: **~$666**
 
 ## 0. Gemini 4 Argon
 
-Price: **$2 per 1M input tokens and $10 per 1M output tokens until 30 Nov, then $4 and $20** (thinking counts as
-output). The engine prices calls at `GEMINI_USD_PER_MTOK` / `GEMINI_USD_PER_MTOK_OUT` (default $4 / $20) and stops at
+Price: **$2 per 1M input tokens and $10 per 1M output tokens until 30 Nov 2026, then $4 and $20** (thinking counts as
+output; launch price announced by Google on 13 Oct 2026, check https://ai.google.dev/gemini-api/docs/pricing). The engine prices calls at `GEMINI_USD_PER_MTOK` / `GEMINI_USD_PER_MTOK_OUT` (default $4 / $20) and stops at
 `GEMINI_DAILY_USD_CAP` (default $3 a day, all bees together). Each bee asks at most once per `GEMINI_MIN_INTERVAL_MS`
 (default 60 s), so `TICK_MS` does not change the Gemini bill. Worst case per call: the prompt plus the 1,024-token answer
 budget (~$0.02 at $20/M), reserved before the call is sent. See the README, "Run it with Gemini 4 Argon".
@@ -13,6 +13,9 @@ budget (~$0.02 at $20/M), reserved before the call is sent. See the README, "Run
 ## 1. Jev
 
 Price: **$0.042 per 1M input tokens, output free** (docs.typesafe.ai/models, and Vercel AI Gateway lists the same). Limits: 1,200 req/min, 250k tok/s.
+
+`JEV_DAILY_USD_CAP` is a soft threshold, not a hard cap: each call reserves an estimate (its request size) before it is
+sent and is booked at the tokens Jev reports, which can be more, so calls in flight can take a day somewhat over it.
 
 Cost per day = `3 bees × (86,400,000 / TICK_MS) × tokens_per_call × $0.042 / 1e6`
 

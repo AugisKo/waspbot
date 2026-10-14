@@ -99,6 +99,13 @@ describe("setup", () => {
     expect((await t.post("/setup/design", { openaiKey: "sk-test", description: "a Trump bee" })).status).toBe(429);
   });
 
+  it("the Gemini key check shares the per-visitor cap (each one is an outbound call)", async () => {
+    const t = await boot();
+    for (let i = 0; i < 40; i++) expect((await t.post("/setup/check-gemini", { key: "good-gemini-key" })).status).toBe(200);
+    expect((await t.post("/setup/check-gemini", { key: "good-gemini-key" })).status).toBe(429);
+    expect((await t.post("/setup/check-jev", { key: "good-jev-key" })).status).toBe(429);
+  });
+
   it("status carries no secrets", async () => {
     const t = await boot();
     const s = (await (await fetch(`${t.base}/setup/status`)).json()) as Record<string, unknown>;

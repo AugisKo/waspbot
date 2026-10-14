@@ -218,7 +218,7 @@ export class Setup {
       send(res, 410, { error: TIMED_OUT, timedOut: true });
       return true;
     }
-    if (path === "/setup/design" || path === "/setup/paint" || path === "/setup/check-jev" || path === "/setup/check-openai") {
+    if (path === "/setup/design" || path === "/setup/paint" || path === "/setup/check-jev" || path === "/setup/check-gemini" || path === "/setup/check-openai") {
       const addr = clientAddr(req.headers["x-forwarded-for"], req.socket.remoteAddress);
       const n = (this.calls.get(addr) ?? 0) + 1;
       if (n > MAX_CALLS_PER_ADDR) {

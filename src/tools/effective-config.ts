@@ -11,8 +11,19 @@
 //   docker compose run --rm --no-deps --entrypoint node -v "$PWD/.env:/cfg/env:ro" engine \
 //     dist/tools/effective-config.js /cfg/env --settings /data/settings.json --diff strategies/ARGON_INTENDED.json
 //
+// That file mode is a SIMULATION: it reads only the file you give it plus the compose defaults below, never process.env,
+// so it cannot see settings that reach the container another way (Hostinger Docker Manager's environment variables,
+// shell variables that docker compose substitutes, an edited compose file). Its output says "source": "file-simulation".
+//
+// To check what the RUNNING engine actually got, use --runtime inside its container. It reads this process's own
+// environment (the container's, as compose built it) and the Setup file at SETTINGS_PATH, through the same loadConfig
+// the engine runs. The output is the same allowlist: knob values, and keys as presence only. Never a value, never the
+// environment itself. It says "source": "runtime".
+//   docker compose exec engine node dist/tools/effective-config.js --runtime [--diff strategies/ARGON_INTENDED.json]
+// (A running container keeps the environment it was started with: after changing settings, `docker compose up -d`
+// first, then check.)
+//
 // Exit codes: 0 = printed (and no differences with --diff), 2 = differences found, 1 = config error or bad usage.
-// process.env is NOT read, so nothing from the shell running the tool can leak into (or mask) the result.
 import { existsSync, readFileSync } from "node:fs";
 import { parseEnv } from "node:util";
 import { BEES, ConfigError, loadConfig, STYLES } from "../config.js";
@@ -95,23 +106,41 @@ export function diffConfig(effective: Record<string, unknown>, intended: Record<
     .map(([knob, v]) => ({ knob, effective: eff[knob] ?? null, intended: v }));
 }
 
+/**
+ * The secret-free effective config of THIS process's environment (inside the engine container: what the engine was
+ * started with), plus the Setup file at SETTINGS_PATH when it exists. Same loadConfig and allowlist as the file mode.
+ */
+export function runtimeEffectiveConfig(env: Record<string, string | undefined> = process.env): Record<string, unknown> {
+  // Same default as config.ts SETTINGS_PATH (the compose file sets /data/settings.json).
+  const settingsPath = env.SETTINGS_PATH?.trim() || "./data/settings.json";
+  const settings = existsSync(settingsPath) ? loadSettings(settingsPath) : null;
+  return { source: "runtime", settingsFile: settings !== null, ...effectiveConfig(env, settings) };
+}
+
 function main(argv: string[]): number {
-  const file = argv[0];
+  const runtime = argv[0] === "--runtime";
+  const file = runtime ? "--runtime" : argv[0];
   const flag = (name: string) => {
     const i = argv.indexOf(name);
     return i >= 0 ? (argv[i + 1] ?? "") : undefined;
   };
   const intendedPath = flag("--diff");
   const settingsPath = flag("--settings");
-  if (!file || (file.startsWith("-") && file !== "-") || intendedPath === "" || settingsPath === "") {
-    process.stderr.write("usage: effective-config <env-file> [--settings <settings.json>] [--diff <intended.json>]\n");
+  if (!file || (!runtime && file.startsWith("-") && file !== "-") || (runtime && settingsPath !== undefined) || intendedPath === "" || settingsPath === "") {
+    process.stderr.write(
+      "usage: effective-config <env-file> [--settings <settings.json>] [--diff <intended.json>]   (simulation from a file)\n" +
+        "       effective-config --runtime [--diff <intended.json>]   (inside the engine container: what it runs)\n",
+    );
     return 1;
   }
-  const env = composeEnv(file === "-" ? {} : parseEnv(readFileSync(file, "utf8")));
   let eff: Record<string, unknown>;
   try {
-    const settings = settingsPath && existsSync(settingsPath) ? loadSettings(settingsPath) : null;
-    eff = effectiveConfig(env, settings);
+    if (runtime) eff = runtimeEffectiveConfig(process.env);
+    else {
+      const env = composeEnv(file === "-" ? {} : parseEnv(readFileSync(file, "utf8")));
+      const settings = settingsPath && existsSync(settingsPath) ? loadSettings(settingsPath) : null;
+      eff = { source: "file-simulation", settingsFile: settings !== null, ...effectiveConfig(env, settings) };
+    }
   } catch (err) {
     // ConfigError messages list variable NAMES only, never values.
     process.stderr.write(err instanceof ConfigError ? `${err.message}\n` : "config could not be loaded\n");

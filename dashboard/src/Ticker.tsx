@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { BEE_META, type DecisionEvent } from "./types";
+import { BEE_META, byCode, fallbackText, type DecisionEvent } from "./types";
 
 const signed = (x: number) => `${x >= 0 ? "+" : "−"}$${Math.abs(x).toFixed(2)}`;
 
@@ -10,7 +10,9 @@ const Row = memo(function Row({ d, chooser }: { d: DecisionEvent; chooser: strin
   const live = d.live;
   const move = live ? (live.deltaUsd > 0 ? "up" : live.deltaUsd < 0 ? "down" : "still") : "still";
   // The chooser's probability for the label it chose (not its separate "confidence" score), so it matches the bars.
-  const pChoice = d.probabilities.find((p) => p.label === d.choice)?.p ?? null;
+  // A code-fallback call has a made-up confidence: it is labelled CODE and shows no percentages.
+  const code = byCode(d);
+  const pChoice = code ? null : (d.probabilities.find((p) => p.label === d.choice)?.p ?? null);
   return (
     <li className={`tick ${acted ? "acted" : ""} ${d.pulse ? "pulse" : ""} move-${move}`} style={{ ["--bee" as string]: meta.color }}>
       <div className="tick-line">
@@ -27,7 +29,12 @@ const Row = memo(function Row({ d, chooser }: { d: DecisionEvent; chooser: strin
           {d.latencyMs !== null && <span className="dim">{d.latencyMs}ms</span>}
         </span>
       </div>
-      {d.required ? (
+      {code ? (
+        <div className="tick-pulse num">
+          <span className="side flat">CODE</span>
+          <span className="dim">{fallbackText(d.fallbackReason, chooser)} · code chose</span>
+        </div>
+      ) : d.required ? (
         <div className="tick-pulse num">
           <span className="side flat">RULES</span>
           <span className="dim">only legal move · {chooser} not asked</span>

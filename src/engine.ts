@@ -10,7 +10,7 @@ import type { Db } from "./db.js";
 import type { EventBus } from "./events.js";
 import type { Executor } from "./exec/executor.js";
 import { contractsFor, roundToLot } from "./exec/sizing.js";
-import type { Jev, JevAnswer, JevResult } from "./jev.js";
+import type { DecisionSource, FallbackReason, Jev, JevAnswer, JevResult } from "./jev.js";
 import { applyFill, applyFunding, freshBee, mark, rollDay, sizedRiskUsd } from "./ledger.js";
 import { log } from "./log.js";
 import type { MarketFeed } from "./market/data.js";
@@ -52,6 +52,10 @@ interface LastDecision {
   ts: number;
   /** The rules made the call (one legal move, a hold); Jev was not asked. */
   required?: boolean;
+  /** Who actually made the call (not the configured chooser): "code" when the code chooser stood in for the model. */
+  decidedBy?: DecisionSource | null;
+  /** Why the code chooser answered (decidedBy "code"). */
+  fallbackReason?: FallbackReason | null;
 }
 
 /** Move a stop only in the position's favour. */
@@ -62,7 +66,7 @@ function ratchetStop(p: Position, cand: number): void {
 
 /** The answer when the menu leaves one legal hold: no Jev call, no cost. */
 function requiredAnswer(label: string): JevAnswer {
-  return { ok: true, choice: label, probabilities: { [label]: 1 }, confidence: 1, conviction: 0, convictionRaw: 0, inputTokens: 0, costUsd: 0, latencyMs: 0, model: "rules" };
+  return { ok: true, source: "rules", choice: label, probabilities: { [label]: 1 }, confidence: 1, conviction: 0, convictionRaw: 0, inputTokens: 0, costUsd: 0, latencyMs: 0, model: "rules" };
 }
 
 export class Engine {
@@ -324,8 +328,11 @@ export class Engine {
     const ruled = required && risk.action.kind === "none" && !risk.forcedBy;
     const status = ruled ? `${labels[0]}: required by rules, ${chooserName(this.d.cfg.jev).short} not asked` : risk.status;
 
-    // Hard rule 10: recorded before it is acted on.
+    // Hard rule 10: recorded before it is acted on. With who actually decided: a code-fallback answer is never recorded,
+    // streamed or shown as the model's.
     const costUsd = r && r.ok ? r.costUsd : 0;
+    const decidedBy: DecisionSource | null = r && r.ok ? r.source : null;
+    const fallbackReason: FallbackReason | null = r && r.ok ? (r.fallbackReason ?? null) : null;
     const decisionId = db.insertDecision({
       bee: id,
       ts: now,
@@ -340,6 +347,8 @@ export class Engine {
       inputTokens: r && r.ok ? r.inputTokens : null,
       jevCostUsd: costUsd,
       jevError: r && !r.ok ? `${r.reason}${r.error ? `: ${r.error.code} ${r.error.message}` : ""}` : null,
+      decidedBy,
+      fallbackReason,
       action: risk.action,
       vetoedBy: risk.vetoedBy,
       forcedBy: risk.forcedBy,
@@ -349,7 +358,7 @@ export class Engine {
     bee.totals.decisions++;
 
     const top3 = r && r.ok ? (Object.entries(r.probabilities).sort((a, b) => b[1] - a[1]).slice(0, 3) as Array<[string, number]>) : [];
-    this.last[id] = { choice: r && r.ok ? r.choice : null, top3: ruled ? [] : top3, confidence: r && r.ok && !ruled ? r.confidence : null, latencyMs: ruled ? null : r ? r.latencyMs : null, status, ts: now, ...(ruled ? { required: true } : {}) };
+    this.last[id] = { choice: r && r.ok ? r.choice : null, top3: ruled ? [] : top3, confidence: r && r.ok && !ruled ? r.confidence : null, latencyMs: ruled ? null : r ? r.latencyMs : null, status, ts: now, decidedBy, fallbackReason, ...(ruled ? { required: true } : {}) };
     // Flat and nothing to ask Jev (bizzy waiting for her breakout): a live "watching" row every PULSE_MS instead of a
     // "no call" row every tick, so the stream shows how close the trigger is.
     const watching = jevStatus === "no_options" && !bee.position && !!brain.idleStatus && risk.action.kind === "none";
@@ -372,6 +381,9 @@ export class Engine {
         latencyMs: ruled ? null : r ? r.latencyMs : null,
         tokens: r && r.ok && !ruled ? r.inputTokens : null,
         jevUsd: Number(costUsd.toFixed(6)),
+        // Who actually made the call ("gemini", "jev", "code", "rules"; null = nobody was asked) and, for code, why.
+        decidedBy,
+        fallbackReason,
         action: describeAction(risk.action),
         vetoedBy: risk.vetoedBy,
         forcedBy: risk.forcedBy,
@@ -943,6 +955,11 @@ export class Engine {
         dailyCapUsd: this.d.cfg.jev.dailyUsdCap,
         capTripped: this.d.jev.capTripped,
         down: this.d.jev.downSince !== null,
+        // A call was refused today because its reservation did not fit under the cap (before settled spend reaches it).
+        budgetRefused: this.d.jev.budgetRefusedToday,
+        // The latest time the code chooser stood in for the model, and why (off-menu answers and errors included).
+        lastFallback: this.d.jev.lastFallback,
+        // The CONFIGURED chooser. Who made each call is the decision's own decidedBy.
         provider: this.d.cfg.jev.provider,
         name: chooserName(this.d.cfg.jev).short,
         fullName: chooserName(this.d.cfg.jev).full,

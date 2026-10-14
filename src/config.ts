@@ -277,8 +277,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, settings: Setti
   const missing: string[] = [];
   // Paper and demo run on the code chooser when there is no key. Real money is never traded on it alone.
   if (mode === "live" && provider === "code") missing.push("GEMINI_API_KEY (or TYPESAFE_API_KEY)");
-  if (!(e.GEMINI_DAILY_USD_CAP >= 0)) throw new ConfigError("GEMINI_DAILY_USD_CAP must be >= 0");
-  if (!(e.GEMINI_TIMEOUT_MS > 0)) throw new ConfigError("GEMINI_TIMEOUT_MS must be > 0");
+  // The spend cap is only as good as the prices it counts with: a zero price makes every call free and a negative one
+  // gives money back, so neither may pass. Non-numbers and Infinity were already refused by num(). Names only, never values.
+  const money: Array<[string, number, "positive" | "nonnegative"]> = [
+    ["GEMINI_DAILY_USD_CAP", e.GEMINI_DAILY_USD_CAP, "nonnegative"],
+    ["GEMINI_USD_PER_MTOK", e.GEMINI_USD_PER_MTOK, "positive"],
+    ["GEMINI_USD_PER_MTOK_OUT", e.GEMINI_USD_PER_MTOK_OUT, "positive"],
+    ["GEMINI_TIMEOUT_MS", e.GEMINI_TIMEOUT_MS, "positive"],
+    ...(provider === "jev"
+      ? ([
+          ["JEV_DAILY_USD_CAP", e.JEV_DAILY_USD_CAP, "nonnegative"],
+          ["JEV_USD_PER_MTOK", e.JEV_USD_PER_MTOK, "positive"],
+          ["JEV_TIMEOUT_MS", e.JEV_TIMEOUT_MS, "positive"],
+        ] as Array<[string, number, "positive" | "nonnegative"]>)
+      : []),
+  ];
+  const bad = money.filter(([, v, kind]) => !Number.isFinite(v) || (kind === "positive" ? !(v > 0) : !(v >= 0)));
+  if (bad.length) {
+    throw new ConfigError(`Invalid settings:\n  ${bad.map(([name, , kind]) => `${name}: must be ${kind === "positive" ? "a number above 0" : "a number, 0 or more"}`).join("\n  ")}`);
+  }
   if (mode === "live" && e.LIVE_ACK !== LIVE_ACK_PHRASE) {
     throw new ConfigError(`MODE=live moves real money. Set LIVE_ACK=${LIVE_ACK_PHRASE} to confirm you accept the risk, or go back to DRY_RUN=true.`);
   }

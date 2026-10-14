@@ -2,8 +2,11 @@
 // - Gemini 4 Argon ("gemini-4-argon") via the Gemini API generateContent endpoint, when GEMINI_API_KEY is set. Hard
 //   daily USD cap with a worst-case reservation before every call, a per-bee call interval, snapshot caching. The key
 //   travels only in the x-goog-api-key header, never in the URL or the prompt.
-// - Jev (TypeSafe AI), when only a Jev key is set (installs set up before Gemini support keep working).
-// - A deterministic pure-code chooser whenever there is no key, the daily cap is hit, or a call fails.
+// - Jev (TypeSafe AI), when only a Jev key is set (installs set up before Gemini support keep working). Its daily cap
+//   is a soft threshold: see decideWithClient.
+// - A deterministic pure-code chooser whenever there is no key, the daily cap (or a reservation) refuses the call, a
+//   call fails, or the model answers off the menu. Every answer says who made it (`source`) and, for code, why
+//   (`fallbackReason`), so the engine can record and show it.
 
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
@@ -35,8 +38,22 @@ export interface JevAsk {
   key?: string;
 }
 
+/** Who actually made a call: the model, Jev, the deterministic code chooser, or the rules (one legal hold). */
+export type DecisionSource = "gemini" | "jev" | "code" | "rules";
+/**
+ * Why the code chooser answered instead of the model:
+ * no_key, cap (today's spend reached the cap), reservation (this call's worst case did not fit in what is left of the
+ * cap, so it was refused before it was sent), backoff (after recent failures), timeout, error (HTTP or network error),
+ * off_menu (the model answered something not on the menu), single_option (one move on the menu, nothing to ask),
+ * paced (asked less than GEMINI_MIN_INTERVAL_MS ago: keep what you have).
+ */
+export type FallbackReason = "no_key" | "cap" | "reservation" | "backoff" | "timeout" | "error" | "off_menu" | "single_option" | "paced";
+
 export interface JevAnswer {
   ok: true;
+  /** Who made this call. "code" = the deterministic code chooser; see fallbackReason. */
+  source: DecisionSource;
+  fallbackReason?: FallbackReason;
   choice: string;
   probabilities: Record<string, number>;
   confidence: number;
@@ -95,10 +112,11 @@ const ADD_LABELS = ["DOUBLE_DOWN", "ADD_TO_WINNER"] as const;
 const HOLD_LABELS = ["HOLD", "HOLD_WINNER", "RIDE", "WAIT"] as const;
 
 /**
- * Deterministic pure-code chooser used when GEMINI_API_KEY is missing, the daily spend cap is hit,
- * only a single move is on the menu, or the Gemini API call fails.
+ * Deterministic pure-code chooser used when there is no key, the daily spend cap (or a reservation) refuses the call,
+ * only a single move is on the menu, or the model call fails. It picks from the menu by fixed priorities; it does NOT
+ * read the owner's free-text rules (coin restrictions still apply, because they shape the menu, and so does the risk layer).
  */
-export function fallbackDecide(ask: JevAsk, latencyMs = 0): JevAnswer {
+export function fallbackDecide(ask: JevAsk, latencyMs = 0, reason: FallbackReason = "error"): JevAnswer {
   const labels = Object.keys(ask.menu);
   const me = (ask.state.me ?? {}) as Record<string, unknown>;
   const uplR = typeof me.upl_r === "number" ? me.upl_r : null;
@@ -152,6 +170,8 @@ export function fallbackDecide(ask: JevAsk, latencyMs = 0): JevAnswer {
 
   return {
     ok: true,
+    source: "code",
+    fallbackReason: reason,
     choice: chosen,
     probabilities,
     confidence: primaryProb,
@@ -209,6 +229,10 @@ export class Jev {
   private lastCallAt = new Map<string, number>();
   /** Worst-case cost of the paid calls in flight right now (the engine asks for all three bees at once). */
   reservedUsd = 0;
+  /** The latest time the code chooser stood in for the model (not counting single-option menus and paced holds). */
+  lastFallback: { reason: FallbackReason; at: number } | null = null;
+  /** UTC day on which a call was last refused because its reservation did not fit under the cap. */
+  private refusedDay: string | null = null;
 
   constructor(private opts: JevOpts) {
     this.client =
@@ -232,6 +256,12 @@ export class Jev {
     return this.spentTodayUsd >= this.opts.dailyUsdCap;
   }
 
+  /** A call was refused today because the cap had no room for it: from then on the code chooser may be answering. */
+  get budgetRefusedToday(): boolean {
+    this.rollDay();
+    return this.refusedDay === this.day;
+  }
+
   private rollDay() {
     const d = dayKey(this.now());
     if (d !== this.day) {
@@ -249,15 +279,37 @@ export class Jev {
     this.downSince ??= t0;
   }
 
-  private book(costUsd: number) {
+  /**
+   * Reserve a paid call's worst case against settled spend PLUS every reservation in flight, in memory and in the
+   * durable ledger. null = it does not fit under the cap; the caller answers from code instead.
+   */
+  private reserve(t0: number, key: string, worstUsd: number): { worstUsd: number; ledgerId?: number } | null {
     this.rollDay();
-    this.spentTodayUsd += costUsd;
-    this.backoffStep = 0;
-    this.backoffUntil = 0;
-    this.downSince = null;
+    if (this.spentTodayUsd + this.reservedUsd + worstUsd > this.opts.dailyUsdCap) {
+      this.refusedDay = this.day;
+      return null;
+    }
+    this.reservedUsd += worstUsd;
+    return { worstUsd, ledgerId: this.opts.ledger?.reserveChooserSpend(t0, key, worstUsd) };
+  }
+
+  /** Release a reservation and book what the call is charged (its worst case when billing is unknown). */
+  private settle(h: { worstUsd: number; ledgerId?: number }, chargedUsd: number) {
+    this.reservedUsd = Math.max(0, this.reservedUsd - h.worstUsd);
+    this.rollDay();
+    this.spentTodayUsd += chargedUsd;
+    if (h.ledgerId !== undefined) this.opts.ledger!.settleChooserSpend(h.ledgerId, chargedUsd);
   }
 
   async decide(ask: JevAsk): Promise<JevResult> {
+    const r = await this.decideInner(ask);
+    if (r.ok && r.source === "code" && r.fallbackReason && r.fallbackReason !== "single_option" && r.fallbackReason !== "paced") {
+      this.lastFallback = { reason: r.fallbackReason, at: this.now() };
+    }
+    return r;
+  }
+
+  private async decideInner(ask: JevAsk): Promise<JevResult> {
     const t0 = this.now();
     const labels = Object.keys(ask.menu);
     if (labels.length === 0) {
@@ -268,10 +320,12 @@ export class Jev {
     if (this.client) return this.decideWithClient(ask, labels, t0);
 
     // Single-option menu (e.g. HOLD only): never waste tokens on a forced single choice.
-    if (labels.length === 1) return fallbackDecide(ask, 0);
+    if (labels.length === 1) return fallbackDecide(ask, 0, "single_option");
 
     // Fallback to pure code when there is no Gemini key, the daily cap is hit, or in backoff.
-    if (!this.opts.apiKey || this.capTripped || t0 < this.backoffUntil) return fallbackDecide(ask, 0);
+    if (!this.opts.apiKey) return fallbackDecide(ask, 0, "no_key");
+    if (this.capTripped) return fallbackDecide(ask, 0, "cap");
+    if (t0 < this.backoffUntil) return fallbackDecide(ask, 0, "backoff");
 
     // Snapshot + menu deduplication cache so identical market states do not re-bill Gemini.
     const stateNoClock = { ...ask.state, utc: undefined };
@@ -290,7 +344,7 @@ export class Jev {
     const hold = holdLabel(ask.menu);
     if (minGap > 0 && last !== undefined && t0 - last < minGap && hold) {
       const probabilities: Record<string, number> = Object.fromEntries(labels.map((l) => [l, l === hold ? 1 : 0]));
-      return { ok: true, choice: hold, probabilities, confidence: 1, conviction: 0, convictionRaw: 0, inputTokens: 0, costUsd: 0, latencyMs: 0, model: "paced" };
+      return { ok: true, source: "code", fallbackReason: "paced", choice: hold, probabilities, confidence: 1, conviction: 0, convictionRaw: 0, inputTokens: 0, costUsd: 0, latencyMs: 0, model: "paced" };
     }
 
     const model = this.opts.model || "gemini-4-argon";
@@ -329,9 +383,8 @@ export class Jev {
     const priceOut = this.opts.usdPerMTokOut ?? priceIn;
     const inBound = inputTokenBound(body);
     const worstUsd = (inBound * priceIn + GEMINI_MAX_OUTPUT_TOKENS * priceOut) / 1e6;
-    if (this.spentTodayUsd + this.reservedUsd + worstUsd > this.opts.dailyUsdCap) return fallbackDecide(ask, 0);
-    this.reservedUsd += worstUsd;
-    const ledgerId = this.opts.ledger?.reserveChooserSpend(t0, paceKey, worstUsd);
+    const held = this.reserve(t0, paceKey, worstUsd);
+    if (!held) return fallbackDecide(ask, 0, "reservation");
     // What this call is charged. Until a response with usage metadata proves otherwise (timeout, network error, HTTP
     // error, unreadable body), it is the worst case: billing for those is unknown, so it is counted as fully billed.
     let chargedUsd = worstUsd;
@@ -350,7 +403,7 @@ export class Jev {
       if (!res.ok) {
         this.fail(t0);
         log.warn("gemini call failed, code fallback", { status: res.status });
-        return { ...fallbackDecide(ask, latencyMs), costUsd: chargedUsd };
+        return { ...fallbackDecide(ask, latencyMs, "error"), costUsd: chargedUsd };
       }
 
       const data = (await res.json()) as GeminiResponse;
@@ -370,7 +423,7 @@ export class Jev {
       const pick = parseChoice(text, labels, maxConv);
       if (!pick) {
         log.warn("gemini answer not on the menu, code fallback", { finishReason: data.candidates?.[0]?.finishReason ?? null });
-        return { ...fallbackDecide(ask, latencyMs), inputTokens, costUsd: chargedUsd };
+        return { ...fallbackDecide(ask, latencyMs, "off_menu"), inputTokens, costUsd: chargedUsd };
       }
 
       const rem = labels.length > 1 ? Number(((1 - pick.confidence) / (labels.length - 1)).toFixed(4)) : 0;
@@ -379,6 +432,7 @@ export class Jev {
 
       const ans: JevAnswer = {
         ok: true,
+        source: "gemini",
         choice: pick.choice,
         probabilities,
         confidence: pick.confidence,
@@ -396,41 +450,52 @@ export class Jev {
       const latencyMs = this.now() - t0;
       this.fail(t0);
       log.warn("gemini call failed, code fallback", { err: safeError(err) });
-      return { ...fallbackDecide(ask, latencyMs), costUsd: chargedUsd };
+      return { ...fallbackDecide(ask, latencyMs, isTimeout(err) ? "timeout" : "error"), costUsd: chargedUsd };
     } finally {
       // Settle: release the reservation and book the charge, in memory and in the durable ledger.
-      this.reservedUsd = Math.max(0, this.reservedUsd - worstUsd);
-      this.rollDay();
-      this.spentTodayUsd += chargedUsd;
-      if (ledgerId !== undefined) this.opts.ledger!.settleChooserSpend(ledgerId, chargedUsd);
+      this.settle(held, chargedUsd);
     }
   }
 
   private async decideWithClient(ask: JevAsk, labels: string[], t0: number): Promise<JevResult> {
-    if (this.capTripped || t0 < this.backoffUntil) return fallbackDecide(ask, 0);
+    if (this.capTripped) return fallbackDecide(ask, 0, "cap");
+    if (t0 < this.backoffUntil) return fallbackDecide(ask, 0, "backoff");
     const criteria = Object.fromEntries(labels.map((l) => [l, ask.menu[l]!.desc]));
     const conv = ask.convictionLabels as unknown as readonly [string, string, ...string[]];
+    const req = {
+      model: this.opts.model,
+      state: ask.state as SDK.EntryType,
+      questions: {
+        action: choice(`${ask.strategy} Pick your next move.`, criteria),
+        conviction: score("Signal strength?", conv),
+      },
+    };
+    // Jev's cap is a SOFT threshold, not a hard one. Each call reserves an estimate before it is sent (the request's
+    // byte bound at the input rate; Jev bills input tokens only), against settled spend plus every reservation in flight,
+    // and the reservation is written to the durable ledger, so concurrent bees and a restart see it. But Jev counts
+    // tokens on its own side (its framing included) and a call is booked at what Jev reports, which can be more than
+    // the estimate, so a day can end somewhat over the cap: by at most what the calls in flight at the crossing bill
+    // above their estimates. A call that fails (timeout, error) is charged its estimate.
+    const worstUsd = (inputTokenBound(JSON.stringify(req)) * this.opts.usdPerMTok) / 1e6;
+    const held = this.reserve(t0, ask.key ?? "*", worstUsd);
+    if (!held) return fallbackDecide(ask, 0, "reservation");
+    // Unknown billing (timeout, error) counts as the estimate.
+    let chargedUsd = worstUsd;
     try {
-      const r = await this.client!.systemOne(
-        {
-          model: this.opts.model,
-          state: ask.state as SDK.EntryType,
-          questions: {
-            action: choice(`${ask.strategy} Pick your next move.`, criteria),
-            conviction: score("Signal strength?", conv),
-          },
-        },
-        { timeout: this.opts.timeoutMs, retry: { maxRetries: 0 } },
-      );
+      const r = await this.client!.systemOne(req, { timeout: this.opts.timeoutMs, retry: { maxRetries: 0 } });
       const latencyMs = this.now() - t0;
       const a = r.answers.action as SDK.ChoiceResponse;
       const c = r.answers.conviction as SDK.ScoreResponse;
-      const inputTokens = r.usage?.input_tokens ?? 0;
+      const inputTokens = r.usage?.input_tokens ?? inputTokenBound(JSON.stringify(req));
       const costUsd = (inputTokens * this.opts.usdPerMTok) / 1e6;
-      this.book(costUsd);
-      if (!labels.includes(a.choice)) return { ...fallbackDecide(ask, latencyMs), inputTokens, costUsd };
+      chargedUsd = costUsd;
+      this.backoffStep = 0;
+      this.backoffUntil = 0;
+      this.downSince = null;
+      if (!labels.includes(a.choice)) return { ...fallbackDecide(ask, latencyMs, "off_menu"), inputTokens, costUsd };
       return {
         ok: true,
+        source: "jev",
         choice: a.choice,
         probabilities: { ...a.probabilities },
         confidence: a.confidence,
@@ -441,12 +506,19 @@ export class Jev {
         latencyMs,
         model: r.model,
       };
-    } catch {
+    } catch (err) {
       this.fail(t0);
-      return fallbackDecide(ask, this.now() - t0);
+      return { ...fallbackDecide(ask, this.now() - t0, isTimeout(err) ? "timeout" : "error"), costUsd: chargedUsd };
+    } finally {
+      this.settle(held, chargedUsd);
     }
   }
 }
+
+const isTimeout = (err: unknown): boolean => {
+  const e = err as { name?: string; message?: string; code?: string };
+  return /timeout|abort/i.test(`${e?.name ?? ""} ${e?.code ?? ""} ${e?.message ?? ""}`);
+};
 
 /** Setup page: one tiny real call proves the Jev key works. Returns an error message, or null when the key is good. */
 export async function checkJevKey(apiKey: string, model: string, timeoutMs = 10_000): Promise<string | null> {

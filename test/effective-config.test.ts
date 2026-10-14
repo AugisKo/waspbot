@@ -1,9 +1,11 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { parseEnv } from "node:util";
 import { describe, expect, it } from "vitest";
 import { LIVE_ACK_PHRASE } from "../src/config.js";
 import type { Settings } from "../src/settings.js";
-import { composeEnv, diffConfig, effectiveConfig } from "../src/tools/effective-config.js";
+import { composeEnv, diffConfig, effectiveConfig, runtimeEffectiveConfig } from "../src/tools/effective-config.js";
 
 const intended = JSON.parse(readFileSync(new URL("../strategies/ARGON_INTENDED.json", import.meta.url), "utf8")) as Record<string, unknown>;
 // Made-up values in each secret's shape, so a leak of any of them would show.
@@ -86,5 +88,28 @@ describe("effective-config tool", () => {
 
   it("live with no chooser key is a config error naming the variable only", () => {
     expect(() => effectiveConfig(composeEnv({ DRY_RUN: "false", MODE: "live", LIVE_ACK: LIVE_ACK_PHRASE }))).toThrow(/GEMINI_API_KEY/);
+  });
+
+  it("runtime mode reads the container's own environment, so it sees overrides the file simulation cannot", () => {
+    // The .env on disk is empty (or absent); the deployment injects the real settings (Docker Manager variables).
+    const fromFile = { source: "file-simulation", ...effectiveConfig(composeEnv({})) };
+    const container: Record<string, string> = { ...composeEnv({}), DRY_RUN: "false", MODE: "demo", GEMINI_API_KEY: SECRETS.GEMINI_API_KEY, SETTINGS_PATH: "/nonexistent/settings.json" };
+    for (const b of ["BEE1", "BEE2", "BEE3"]) for (const f of ["KEY", "SECRET", "PASSPHRASE"]) container[`${b}_OKX_DEMO_API_${f}`] = `${b}-${f}-value`;
+    const runtime = runtimeEffectiveConfig(container);
+    expect(fromFile).toMatchObject({ mode: "dry", chooser: { provider: "code" } });
+    expect(runtime).toMatchObject({ source: "runtime", settingsFile: false, mode: "demo", chooser: { provider: "gemini", apiKeyPresent: true }, keys: { bee1: { okxDemo: true } } });
+    const out = JSON.stringify(runtime);
+    expect(out).not.toMatch(/-value|AQ\./);
+    for (const v of Object.values(container)) if (/value|AQ\./.test(v)) expect(out).not.toContain(v);
+  });
+
+  it("runtime mode loads the Setup file at SETTINGS_PATH, presence only", () => {
+    const dir = mkdtempSync(join(tmpdir(), "bees-effcfg-"));
+    const path = join(dir, "settings.json");
+    const s: Settings = { version: 1, jevKey: "jev-setup-file-value", acceptedRiskAt: 1, createdAt: 1, bees: [0, 1, 2].map((i) => ({ name: `Bee ${i}`, style: "breezy" as const, tagline: "", rules: "", coins: [], image: false })) };
+    writeFileSync(path, JSON.stringify(s));
+    const runtime = runtimeEffectiveConfig({ ...composeEnv({}), SETTINGS_PATH: path });
+    expect(runtime).toMatchObject({ source: "runtime", settingsFile: true, chooser: { provider: "jev" }, keys: { jev: true }, slots: { bee1: "breezy" } });
+    expect(JSON.stringify(runtime)).not.toContain("jev-setup-file-value");
   });
 });

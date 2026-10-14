@@ -80,6 +80,18 @@ describe("Jev client", () => {
     expect(r.ok && Object.keys(menu)).toContain(r.ok ? r.choice : "");
   });
 
+  it("says who decided: jev for a real answer, code with the reason otherwise", async () => {
+    expect(await new Jev({ ...base, client: fake(answers) }).decide(ask)).toMatchObject({ source: "jev" });
+    const bad = { ...answers, action: { ...answers.action, choice: "YOLO" } };
+    const j = new Jev({ ...base, client: fake(bad) });
+    expect(await j.decide(ask)).toMatchObject({ source: "code", fallbackReason: "off_menu" });
+    expect(j.lastFallback).toMatchObject({ reason: "off_menu" });
+    const t = Object.assign(new Error("Request timed out"), { name: "TimeoutError" });
+    expect(await new Jev({ ...base, client: fake(() => t) }).decide(ask)).toMatchObject({ source: "code", fallbackReason: "timeout" });
+    expect(await new Jev({ ...base, client: fake(() => new Error("boom")) }).decide(ask)).toMatchObject({ source: "code", fallbackReason: "error" });
+    expect(await new Jev({ ...base, spentTodayUsd: 5, client: fake(answers) }).decide(ask)).toMatchObject({ source: "code", fallbackReason: "cap" });
+  });
+
   it("never calls with an empty menu", async () => {
     const f = fake(answers);
     expect(await new Jev({ ...base, client: f }).decide({ ...ask, menu: {} })).toMatchObject({ ok: false });
@@ -147,14 +159,18 @@ describe("Gemini 4 Argon chooser", () => {
   it("no key: code fallback, no network", async () => {
     const g = gemini(answer("{}"));
     const r = await new Jev({ ...gBase, apiKey: "", fetchFn: g.fetchFn }).decide(gAsk);
-    expect(r).toMatchObject({ ok: true, model: "code-fallback", choice: "APE_SOL", costUsd: 0 });
+    expect(r).toMatchObject({ ok: true, model: "code-fallback", source: "code", fallbackReason: "no_key", choice: "APE_SOL", costUsd: 0 });
     expect(g.sent).toHaveLength(0);
   });
 
   it("cap hit, or a call whose worst case would cross the cap: code fallback, no network", async () => {
     const g = gemini(answer("{}"));
-    expect(await new Jev({ ...gBase, spentTodayUsd: 3, fetchFn: g.fetchFn }).decide(gAsk)).toMatchObject({ model: "code-fallback" });
-    expect(await new Jev({ ...gBase, spentTodayUsd: 2.99, fetchFn: g.fetchFn }).decide(gAsk)).toMatchObject({ model: "code-fallback" });
+    expect(await new Jev({ ...gBase, spentTodayUsd: 3, fetchFn: g.fetchFn }).decide(gAsk)).toMatchObject({ model: "code-fallback", source: "code", fallbackReason: "cap" });
+    // Near the cap (not tripped): the reservation refuses the call, and the answer and the chooser both say so.
+    const near = new Jev({ ...gBase, spentTodayUsd: 2.999, fetchFn: g.fetchFn });
+    expect(await near.decide(gAsk)).toMatchObject({ model: "code-fallback", source: "code", fallbackReason: "reservation" });
+    expect([near.capTripped, near.downSince, near.budgetRefusedToday]).toEqual([false, null, true]);
+    expect(near.lastFallback).toMatchObject({ reason: "reservation" });
     expect(g.sent).toHaveLength(0);
   });
 
@@ -162,7 +178,7 @@ describe("Gemini 4 Argon chooser", () => {
     for (const text of ['{"choice":"YOLO","confidence":0.9,"conviction":3}', '```json\n{"choice":"APE_SOL"}\n```', "APE_SOL", '{"choice":["APE_SOL"]}', "null", ""]) {
       const g = gemini(answer(text));
       const r = await new Jev({ ...gBase, fetchFn: g.fetchFn }).decide(gAsk);
-      expect(r).toMatchObject({ ok: true, model: "code-fallback" });
+      expect(r).toMatchObject({ ok: true, model: "code-fallback", source: "code", fallbackReason: "off_menu" });
       expect(r.ok && r.costUsd).toBeGreaterThan(0);
     }
     expect(parseChoice('{"choice":"WAIT","confidence":7,"conviction":9}', ["WAIT"], 3)).toEqual({ choice: "WAIT", confidence: 1, conviction: 3 });
@@ -316,6 +332,72 @@ describe("Gemini spend cap: reservations", () => {
     const g = gemini(answer('{"choice":"WAIT","confidence":0.6,"conviction":1}'));
     await new Jev({ ...gBase, fetchFn: g.fetchFn, ledger: db }).decide(gAsk);
     expect(db.chooserSpendSince(0)).toBeCloseTo((600 * 4 + 100 * 20) / 1e6, 12);
+  });
+});
+
+// ---- Jev's cap is a SOFT threshold: durable pre-call estimates, booked at what Jev reports. ----
+
+describe("Jev spend cap: soft threshold", () => {
+  const slow = (tokens: number | undefined): SystemOne & { calls: number } => {
+    const f = {
+      calls: 0,
+      async systemOne() {
+        f.calls++;
+        await new Promise((r) => setTimeout(r, 5));
+        return { model: "jev-1.13.0", usage: tokens === undefined ? undefined : { input_tokens: tokens, output_tokens: 0 }, answers } as never;
+      },
+    };
+    return f;
+  };
+  /** One call's pre-call estimate, read from the ledger (a reply with no usage is booked at the estimate). */
+  async function estimate(): Promise<number> {
+    const db = new Db(":memory:");
+    await new Jev({ ...base, client: slow(undefined), ledger: db }).decide(ask);
+    return db.chooserSpendSince(0);
+  }
+
+  it("concurrent bees: calls billed at their estimate cannot pass the cap together", async () => {
+    const est = await estimate();
+    const f = slow(undefined);
+    const j = new Jev({ ...base, dailyUsdCap: 1 + 2.5 * est, spentTodayUsd: 1, client: f });
+    await Promise.all(["bee1", "bee2", "bee3", "bee4", "bee5"].map((key) => j.decide({ ...ask, key })));
+    expect(f.calls).toBe(2);
+    expect(j.spentTodayUsd).toBeLessThanOrEqual(1 + 2.5 * est);
+    expect(j.budgetRefusedToday).toBe(true);
+    expect(j.reservedUsd).toBe(0);
+  });
+
+  it("documented overshoot: Jev bills more than the estimate, so a day can end over the cap, by the calls in flight only", async () => {
+    // The gate's repro: $1.99 of $2, three bees at once, each reply billed 1M input tokens at $0.15/M.
+    const f = slow(1_000_000);
+    const j = new Jev({ ...base, dailyUsdCap: 2, usdPerMTok: 0.15, spentTodayUsd: 1.99, client: f });
+    await Promise.all(["bee1", "bee2", "bee3"].map((key) => j.decide({ ...ask, key })));
+    expect(f.calls).toBe(3);
+    expect(j.spentTodayUsd).toBeCloseTo(2.44, 9); // over the cap: a soft threshold, as the README says
+    // Once over, nothing more is sent today.
+    expect(await j.decide({ ...ask, key: "bee1" })).toMatchObject({ source: "code", fallbackReason: "cap" });
+    expect(f.calls).toBe(3);
+  });
+
+  it("restart: a Jev call in flight is in the durable ledger, and a failed call stays charged at its estimate", async () => {
+    const db = new Db(":memory:");
+    let fail!: () => void;
+    const hang: SystemOne = { systemOne: () => new Promise((_res, rej) => (fail = () => rej(new Error("socket hang up")))) };
+    const j = new Jev({ ...base, client: hang, ledger: db });
+    const pending = j.decide(ask);
+    await new Promise((r) => setTimeout(r, 1));
+    const restored = db.chooserSpendSince(0);
+    expect(restored).toBeGreaterThan(0);
+    expect(new Jev({ ...base, client: fake(answers), spentTodayUsd: Math.max(db.jevSpendSince(0), restored) }).spentTodayUsd).toBe(restored);
+    fail();
+    expect(await pending).toMatchObject({ source: "code", fallbackReason: "error" });
+    expect(db.chooserSpendSince(0)).toBeCloseTo(restored, 12);
+  });
+
+  it("a settled Jev call is booked in the ledger at what Jev reported", async () => {
+    const db = new Db(":memory:");
+    await new Jev({ ...base, client: fake(answers, 500), ledger: db }).decide(ask);
+    expect(db.chooserSpendSince(0)).toBeCloseTo((500 * 0.042) / 1e6, 12);
   });
 });
 

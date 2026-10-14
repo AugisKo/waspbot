@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { money, signed } from "./BeeColumn";
 import { HiveButton } from "./Hive";
-import { chooserShort, PROFILE, type Snapshot } from "./types";
+import { chooserShort, fallbackText, PROFILE, type Snapshot } from "./types";
 
 function Clock() {
   const [now, setNow] = useState(Date.now());
@@ -59,6 +59,9 @@ export function Header({ snap, connected, stalled, soundOn, onSound }: { snap: S
   const jev = snap?.jev;
   const who = chooserShort(snap);
   const onCode = jev?.provider === "code";
+  // The configured chooser is not proof of who decided: say so whenever the code chooser has been standing in.
+  const recentFallback = jev?.lastFallback && snap && snap.ts - jev.lastFallback.at < 15 * 60_000 ? jev.lastFallback : null;
+  const standIn = !onCode && (jev?.down || jev?.capTripped || jev?.budgetRefused || !!recentFallback);
   const orders = snap?.bees.reduce((a, b) => a + b.totals.orders, 0) ?? 0;
   const decisions = snap?.bees.reduce((a, b) => a + b.totals.decisions, 0) ?? 0;
   const live = connected && !stalled;
@@ -80,10 +83,11 @@ export function Header({ snap, connected, stalled, soundOn, onSound }: { snap: S
             day {day} · 3 bees · OKX X-Perps · not financial advice
           </span>
           {jev?.provider === "gemini" && (
-            <a className="powered" href="https://ai.google.dev/gemini-api/docs" target="_blank" rel="noopener" title={`${jev.fullName ?? "Gemini"} makes the bees' calls`}>
+            <a className="powered" href="https://ai.google.dev/gemini-api/docs" target="_blank" rel="noopener" title={`The configured chooser is ${jev.fullName ?? "Gemini"}. Each call in the decision stream says who made it: CODE marks the code chooser standing in.`}>
               <img src="/gemini.svg" alt="" width="16" height="16" />
               <span>
                 Powered by <b>{jev.fullName ?? "Gemini"}</b>
+                {standIn ? " · code standing in" : ""}
               </span>
             </a>
           )}
@@ -102,8 +106,20 @@ export function Header({ snap, connected, stalled, soundOn, onSound }: { snap: S
         <Counter
           label="Decisions"
           value={decisions.toLocaleString()}
-          sub={onCode ? "no model key: code decides" : jev?.down ? `${who} offline: code decides` : jev?.capTripped ? `${who} cap hit: code decides` : "every one recorded"}
-          tone={!onCode && (jev?.down || jev?.capTripped) ? "bad" : undefined}
+          sub={
+            onCode
+              ? "no model key: code decides"
+              : jev?.down
+                ? `${who} offline: code decides`
+                : jev?.capTripped
+                  ? `${who} cap hit: code decides`
+                  : jev?.budgetRefused
+                    ? `${who} near its cap: code may decide`
+                    : recentFallback
+                      ? `code stood in: ${fallbackText(recentFallback.reason, who)}`
+                      : "every one recorded"
+          }
+          tone={standIn ? "bad" : undefined}
         />
         <Counter label="Visitors" value={snap?.visitors ? snap.visitors.total.toLocaleString() : "–"} sub={snap?.visitors ? `${snap.visitors.watching} watching now` : undefined} />
         <a className="counter host" href={PROFILE.links?.sponsor ?? "https://mrc.fm/beebots"} target="_blank" rel="noopener">
