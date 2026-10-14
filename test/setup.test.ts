@@ -49,6 +49,7 @@ async function boot(opts: { designs?: BeeDesign[] } = {}) {
     refDir: dir,
     okxApiBase: "https://okx.invalid",
     windowMin: 120,
+    code: "ABCDE-FGHJK-LMNPQ",
     now: () => now,
     onSaved: () => saved++,
     checkJev: async (key) => (key === "good-jev-key" ? null : "Jev rejected that key."),
@@ -64,7 +65,7 @@ async function boot(opts: { designs?: BeeDesign[] } = {}) {
   await new Promise((r) => server.once("listening", r));
   close = () => server.close();
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  const post = (path: string, body: unknown) => fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const post = (path: string, body: unknown, code = "abcde fghjk lmnpq") => fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json", "x-setup-code": code }, body: JSON.stringify(body) });
   /** Portraits on disk, as the paint step leaves them. */
   const paintAll = () => {
     mkdirSync(imageDir(settingsPath), { recursive: true });
@@ -74,9 +75,33 @@ async function boot(opts: { designs?: BeeDesign[] } = {}) {
 }
 
 describe("setup", () => {
-  it("needs no code: the page can write straight away", async () => {
+  it("every write needs the setup code from the log (spacing and case do not matter)", async () => {
     const t = await boot();
+    expect((await t.post("/setup/check-code", {})).status).toBe(200);
     expect((await t.post("/setup/check-jev", { key: "good-jev-key" })).status).toBe(200);
+    const bad = await t.post("/setup/check-jev", { key: "good-jev-key" }, "WRONG-CODE");
+    expect(bad.status).toBe(401);
+    expect(((await bad.json()) as { error: string }).error).toMatch(/docker compose logs engine/);
+    expect((await t.post("/setup/check-jev", { key: "good-jev-key" }, "")).status).toBe(401);
+  });
+
+  it("locks after too many wrong codes, even for the right one, until a restart", async () => {
+    const t = await boot();
+    for (let i = 0; i < 20; i++) expect((await t.post("/setup/check-code", {}, `nope-${i}`)).status).toBe(401);
+    expect((await t.post("/setup/check-code", {})).status).toBe(423);
+    const s = (await (await fetch(`${t.base}/setup/status`)).json()) as { codeLocked: boolean };
+    expect(s.codeLocked).toBe(true);
+  });
+
+  it("saves with the rules engine and no model key at all", async () => {
+    const t = await boot();
+    t.paintAll();
+    const rules: Record<string, unknown> = { ...SAVE, engine: "rules" };
+    delete rules.jevKey;
+    expect((await t.post("/setup/save", rules)).status).toBe(200);
+    const st = loadSettings(t.settingsPath)!;
+    expect(st.engine).toBe("rules");
+    expect(loadConfig({}, st).jev).toMatchObject({ engine: "rules", provider: "code" });
   });
 
   it("closes when the setup window runs out, with a restart hint", async () => {
@@ -110,7 +135,7 @@ describe("setup", () => {
     const t = await boot();
     const s = (await (await fetch(`${t.base}/setup/status`)).json()) as Record<string, unknown>;
     expect(s).toMatchObject({ needed: true, timedOut: false });
-    expect(Object.keys(s).sort()).toEqual(["closesAt", "needed", "secure", "serverHasOpenAiKey", "styles", "timedOut"]);
+    expect(Object.keys(s).sort()).toEqual(["closesAt", "codeLocked", "codeRequired", "needed", "secure", "serverHasOpenAiKey", "styles", "timedOut"]);
   });
 
   it("refuses to save without all three risk statements", async () => {
@@ -154,7 +179,7 @@ describe("setup", () => {
     delete noJev.jevKey;
     const r = await t.post("/setup/save", noJev);
     expect(r.status).toBe(400);
-    expect(((await r.json()) as { error: string }).error).toMatch(/Gemini key/);
+    expect(((await r.json()) as { error: string }).error).toMatch(/Gemini, Claude or Jev key/);
     expect(loadSettings(t.settingsPath)).toBeNull();
   });
 
@@ -225,10 +250,10 @@ describe("setup", () => {
     expect(s.bees[1]).toMatchObject({ coins: ["TRUMP"], style: "boozy" }); // Breakout can't trade TRUMP
   });
 
-  it("refuses the official bees' names, typed by the owner", async () => {
+  it("refuses the built-in wasps' names, typed by the owner", async () => {
     const t = await boot();
     t.paintAll();
-    for (const name of ["Bizzy", "breezy-bee", "Boozy Bee", "BIZZIE"]) {
+    for (const name of ["Hornet", "vespa-wasp", "Jacket Wasp", "HORNETT"]) {
       const bees = [{ ...BEES[0]!, name }, BEES[1], BEES[2]];
       expect((await t.post("/setup/save", { ...SAVE, bees })).status).toBe(400);
     }
@@ -241,12 +266,9 @@ describe("setup", () => {
     expect((await t.post("/setup/save", { ...SAVE, bees })).status).toBe(400);
   });
 
-  it("needs an explicit answer to 'Join the Hive?', and stores it", async () => {
+  it("'Join the Hive?' defaults to no, and a given answer is stored", async () => {
     const t = await boot();
     t.paintAll();
-    const noHive: Record<string, unknown> = { ...SAVE };
-    delete noHive.hive;
-    expect((await t.post("/setup/save", noHive)).status).toBe(400);
     expect((await t.post("/setup/save", { ...SAVE, hive: "yes" })).status).toBe(400);
     expect(loadSettings(t.settingsPath)).toBeNull();
     expect((await t.post("/setup/save", { ...SAVE, hive: true })).status).toBe(200);
@@ -271,10 +293,10 @@ describe("designing a bee", () => {
   });
 
   it("refuses an official bee's name from the model, with a clear message", async () => {
-    const t = await boot({ designs: [design({ name: "Boozy Bee" })] });
+    const t = await boot({ designs: [design({ name: "Hornet Wasp" })] });
     const r = await t.post("/setup/design", { openaiKey: "sk-test", description: "a party bee" });
     expect(r.status).toBe(422);
-    expect(((await r.json()) as { error: string }).error).toMatch(/official bees.*Create again/);
+    expect(((await r.json()) as { error: string }).error).toMatch(/built-in wasps.*Create again/);
   });
 
   it("asks the owner to rephrase when none of the coins are on OKX", async () => {
@@ -320,14 +342,14 @@ describe("finishDesign", () => {
   });
 
   it("refuses reserved names", () => {
-    expect(() => finishDesign(design({ name: "Bizzy" }), COINS)).toThrow(DesignError);
+    expect(() => finishDesign(design({ name: "Hornet" }), COINS)).toThrow(DesignError);
   });
 });
 
 describe("settings", () => {
-  it("reserves the official names in their obvious spellings only", () => {
-    for (const n of ["Bizzy", "bizzy-bee", "Bizzy Bee", "BizzyBee", "BREEZY", "Breezey bee", "Boozie", "bizy"]) expect(isReservedName(n), n).toBe(true);
-    for (const n of ["Buzzy", "Beatrice", "Bee", "Boozer", "Breeze", "Donny"]) expect(isReservedName(n), n).toBe(false);
+  it("reserves the built-in names in their obvious spellings only", () => {
+    for (const n of ["Hornet", "hornet-wasp", "Hornet Wasp", "HornetWasp", "VESPA", "Vespa wasp", "Jackett", "jacket"]) expect(isReservedName(n), n).toBe(true);
+    for (const n of ["Horn", "Wasp", "Vesper", "Jack", "Donny", "Bizzy"]) expect(isReservedName(n), n).toBe(false);
   });
 
   it("still reads a Setup file saved before designed bees and the Hive existed", () => {

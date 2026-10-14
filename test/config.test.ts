@@ -101,11 +101,11 @@ describe("config", () => {
     expect(loadConfig({ TYPESAFE_API_KEY: "k" }).mode).toBe("dry");
   });
 
-  it("with no Setup file the bees are the original three", () => {
+  it("with no Setup file the wasps are the built-in three", () => {
     const c = loadConfig({ TYPESAFE_API_KEY: "k" });
-    expect(c.slots.bee1).toMatchObject({ style: "bizzy", name: "Bizzy", customImage: false });
-    expect(c.slots.bee2).toMatchObject({ style: "breezy", name: "Breezy" });
-    expect(c.slots.bee3).toMatchObject({ style: "boozy", name: "Boozy" });
+    expect(c.slots.bee1).toMatchObject({ style: "bizzy", name: "Jacket", customImage: false });
+    expect(c.slots.bee2).toMatchObject({ style: "breezy", name: "Vespa" });
+    expect(c.slots.bee3).toMatchObject({ style: "boozy", name: "Hornet" });
   });
 
   it("a Setup file supplies the chooser key and the bees; the environment still wins", () => {

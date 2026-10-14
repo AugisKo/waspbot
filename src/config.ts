@@ -179,14 +179,14 @@ const EnvSchema = z.object({
   OPENAI_API_KEY: opt,
   OPENAI_TEXT_MODEL: str("gpt-5.4-nano"),
   OPENAI_IMAGE_MODEL: str("gpt-image-2"),
-  // Optional links shown on the dashboard (the "Hosted on Hostinger" chip and the "Get the code" link).
-  HOST_LINK: str("https://mrc.fm/beebots"),
-  REPO_LINK: str("https://github.com/imikerussell/beebots"),
-  // The Hive: the public leaderboard that installs can join (paper only). Reports go to <HIVE_URL>/hive/report.
-  HIVE_URL: str("https://beebots.tech"),
+  // Optional links shown on the dashboard (a hosting chip and the "Get the code" link). Blank = not shown.
+  HOST_LINK: str(""),
+  REPO_LINK: str("https://github.com/AugisKo/waspbot"),
+  // A Hive: a public leaderboard that installs can join (paper only). Blank (the default) = no Hive at all.
+  HIVE_URL: str(""),
   // "Update available" on the dashboard: checks this repo's latest GitHub Release against APP_VERSION (set by the build).
   UPDATE_CHECK: bool(true),
-  UPDATE_REPO: str("imikerussell/beebots"),
+  UPDATE_REPO: str("AugisKo/waspbot"),
   APP_VERSION: str("dev"),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).optional().default("info"),
   ALERT_WEBHOOK_URL: opt,

@@ -558,6 +558,23 @@ export async function checkJevKey(apiKey: string, model: string, timeoutMs = 10_
   }
 }
 
+/** Setup page: look the Claude model up with the key (a free metadata call, no tokens). null = the key is good. */
+export async function checkClaudeKey(apiKey: string, model: string, timeoutMs = 10_000, fetchFn: typeof fetch = fetch): Promise<string | null> {
+  try {
+    const res = await fetchFn(`https://api.anthropic.com/v1/models/${encodeURIComponent(model)}`, {
+      headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (res.ok) return null;
+    if (res.status === 401 || res.status === 403) return "Anthropic rejected that key. Copy it again from console.anthropic.com.";
+    if (res.status === 404) return `That key cannot see ${model}. Set ANTHROPIC_MODEL to a model your account has.`;
+    return `Could not reach the Anthropic API (HTTP ${res.status})`;
+  } catch (err) {
+    const e = safeError(err);
+    return `Could not reach the Anthropic API (${e.code}: ${e.message})`;
+  }
+}
+
 /**
  * Setup page: look the model up with the key (a free metadata call, no tokens). Returns an error message, or null when
  * the key can see the model. It cannot prove billing: a free-tier key may still be refused when the bees first ask.

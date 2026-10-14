@@ -1,5 +1,8 @@
-// First-run Setup. With no chooser key (Gemini or Jev) anywhere, the engine starts in setup mode: no trading, just the dashboard's Setup
-// page. The page is public (a fresh VPS), and there is no code to dig out of a log, so it is protected by:
+// First-run Setup. With no Setup file and no chooser key in the environment, the engine starts in setup mode: no trading,
+// just the dashboard's Setup page. The page is public (a fresh VPS), so it is protected by:
+//  - a one-time setup code, printed in the engine's log at start (SETUP_CODE overrides it). Every write needs it, and
+//    after MAX_BAD_CODES wrong codes Setup locks until the container restarts. Whoever reaches the page first can no
+//    longer take the server: they also need the log;
 //  - first come, first served: once saved, Setup is closed for good (until the owner deletes settings.json);
 //  - a setup window: SETUP_WINDOW_MIN after the engine starts (default 120), Setup locks until the container restarts;
 //  - caps on the calls that cost money (designs and portraits, in total and per visitor).
@@ -7,13 +10,14 @@
 // After a save the engine exits and Docker restarts it with the new settings, in paper trading.
 // Each bee is designed from one sentence ("how do you want this bee to trade?"): OpenAI invents its name, rules, coins
 // and look, the engine checks the coins against OKX's live list and picks the brain it runs on, then OpenAI paints it.
+import { randomInt, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { BEES } from "./config.js";
 import { hashPassword, MAX_PASSWORD, MIN_PASSWORD, readJson, send } from "./gate.js";
-import { checkGeminiKey, checkJevKey } from "./jev.js";
+import { checkClaudeKey, checkGeminiKey, checkJevKey } from "./jev.js";
 import { log } from "./log.js";
 import { BIZZY_BREAKOUT_COINS } from "./bees/bizzy.js";
 import { BREEZY_COINS } from "./bees/breezy.js";
@@ -30,6 +34,17 @@ const MAX_DESIGNS = 60;
 const MAX_CALLS_PER_ADDR = 40;
 const COINS_TTL_MS = 10 * 60_000;
 const MAX_BODY = 32 * 1024;
+/** Wrong setup codes before Setup locks until a restart. */
+export const MAX_BAD_CODES = 20;
+
+/** A setup code that is easy to read from a log and type: 3 groups of 4 from an unambiguous alphabet (~60 bits). */
+export function newSetupCode(): string {
+  const A = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const g = () => Array.from({ length: 5 }, () => A[randomInt(A.length)]).join("");
+  return `${g()}-${g()}-${g()}`;
+}
+
+const normCode = (c: string) => c.toUpperCase().replace(/[^A-Z0-9]/g, "");
 
 export interface SetupOpts {
   settingsPath: string;
@@ -44,9 +59,14 @@ export interface SetupOpts {
   okxApiBase: string;
   /** Minutes after the engine starts that Setup stays open (SETUP_WINDOW_MIN). */
   windowMin: number;
+  /** The one-time setup code (SETUP_CODE); generated when absent. "" turns the code off (tests only). */
+  code?: string;
+  claudeModel?: string;
   now?: () => number;
   /** Injectable for tests; defaults to one real Jev call. */
   checkJev?: (key: string, model: string) => Promise<string | null>;
+  /** Injectable for tests; defaults to one free Anthropic model lookup. */
+  checkClaude?: (key: string, model: string) => Promise<string | null>;
   /** Injectable for tests; defaults to one free Gemini model lookup. */
   checkGemini?: (key: string, model: string) => Promise<string | null>;
   /** Injectable for tests; default: OKX's live crypto X-Perp list. */
@@ -63,7 +83,7 @@ export const TIMED_OUT =
   "Setup timed out to keep this server safe. Restart the engine container (Hostinger Docker Manager → Restart, or `docker compose restart engine`) to open it again.";
 
 const reservedMsg = (name: string) =>
-  `"${name}" belongs to one of the official bees (${STYLES.map((s) => STYLE_INFO[s].name).join(", ")}). Pick another name.`;
+  `"${name}" is one of the built-in wasps (${STYLES.map((s) => STYLE_INFO[s].name).join(", ")}). Pick another name.`;
 
 /**
  * Checks a design from the model: coins must be on OKX's live list (unknown ones are dropped; if none are left, the
@@ -113,10 +133,10 @@ export function imagePath(settingsPath: string, slot: string): string | null {
 const Accept = z.object({ notAdvice: z.literal(true), paperDefault: z.literal(true), ownRisk: z.literal(true) });
 /** A Setup-made bee: designed (rules, look) and painted. */
 const SetupBee = BeeSchema.extend({
-  name: BeeSchema.shape.name.refine((n) => !isReservedName(n), { message: "that name belongs to an official bee" }),
+  name: BeeSchema.shape.name.refine((n) => !isReservedName(n), { message: "that name belongs to a built-in wasp" }),
   rules: z.string().trim().min(10).max(500),
   look: z.string().trim().min(3).max(400),
-  image: z.literal(true, { errorMap: () => ({ message: "every bee needs its portrait" }) }),
+  image: z.literal(true, { errorMap: () => ({ message: "every wasp needs its portrait" }) }),
 });
 const optKey = z
   .string()
@@ -125,16 +145,18 @@ const optKey = z
   .pipe(z.string().min(8).optional())
   .optional();
 const SaveBody = z.object({
-  /** The chooser's key: Gemini 4 Argon (preferred) or Jev. At least one. */
+  /** "rules" needs no model key; "llm" needs one of Gemini, Claude or Jev. */
+  engine: z.enum(["rules", "llm"]).default("llm"),
   geminiKey: optKey,
+  anthropicKey: optKey,
   jevKey: optKey,
   openaiKey: z.string().trim().min(8).optional(),
   accept: Accept,
   bees: z.array(SetupBee).length(3),
   /** Gates the dashboard's writes (joining or leaving the Hive). Stored as a salted scrypt hash only. */
   ownerPassword: z.string().min(MIN_PASSWORD).max(MAX_PASSWORD),
-  /** "Join the Hive?" step: an explicit yes or no. A yes joins on the engine's first start (hive.ts). */
-  hive: z.boolean(),
+  /** "Join the Hive?" (only when a Hive is configured, HIVE_URL). Default no. */
+  hive: z.boolean().default(false),
 });
 
 export class Setup {
@@ -145,9 +167,12 @@ export class Setup {
   private designs = 0;
   private saved = false;
   private coins: { at: number; list: string[] } | null = null;
+  private readonly code: string;
+  private badCodes = 0;
 
   private checkJev: (key: string, model: string) => Promise<string | null>;
   private checkGemini: (key: string, model: string) => Promise<string | null>;
+  private checkClaude: (key: string, model: string) => Promise<string | null>;
   private listCoins: () => Promise<string[]>;
   private design: (key: string, model: string, description: string, coins: string[]) => Promise<BeeDesign>;
   private paint: (key: string, model: string, refDir: string, name: string, look: string) => Promise<Buffer>;
@@ -157,6 +182,8 @@ export class Setup {
     this.openedAt = this.now();
     this.checkJev = o.checkJev ?? checkJevKey;
     this.checkGemini = o.checkGemini ?? ((key, model) => checkGeminiKey(key, model));
+    this.checkClaude = o.checkClaude ?? ((key, model) => checkClaudeKey(key, model));
+    this.code = o.code === undefined ? newSetupCode() : o.code;
     this.listCoins = o.listCoins ?? (() => fetchXperpCoins(o.okxApiBase));
     this.design = o.design ?? designBee;
     this.paint = o.paint ?? paintBee;
@@ -180,8 +207,22 @@ export class Setup {
     return !this.saved && this.now() >= this.closesAt;
   }
 
+  /** Setup is locked after too many wrong codes (until a restart). */
+  get codeLocked(): boolean {
+    return this.badCodes >= MAX_BAD_CODES;
+  }
+
+  private codeOk(req: IncomingMessage): boolean {
+    if (!this.code) return true;
+    const given = Buffer.from(normCode(String(req.headers["x-setup-code"] ?? "")));
+    const want = Buffer.from(normCode(this.code));
+    return given.length === want.length && timingSafeEqual(given, want);
+  }
+
   announce(): void {
-    log.info("setup is open: open this server's address in a browser to set up your bees", { windowMin: this.o.windowMin });
+    log.info("setup is open: open this server's address in a browser to set up your wasps", { windowMin: this.o.windowMin });
+    // The one place the code appears. Printed to stdout on purpose (docker compose logs engine), never sent anywhere.
+    if (this.code) console.log(`\n  WaspBot setup code: ${this.code}\n  (enter it on the Setup page; it is valid until Setup is saved or the container restarts)\n`);
     const t = setTimeout(() => {
       if (!this.saved) log.warn("setup timed out; restart the engine container to open it again");
     }, this.o.windowMin * 60_000);
@@ -193,6 +234,8 @@ export class Setup {
       needed: !this.saved,
       timedOut: this.timedOut,
       closesAt: this.closesAt,
+      codeRequired: !!this.code,
+      codeLocked: this.codeLocked,
       secure: req.headers["x-forwarded-proto"] === "https",
       serverHasOpenAiKey: !!this.o.openai.apiKey,
       styles: STYLES.map((id) => ({ id, ...STYLE_INFO[id] })),
@@ -218,7 +261,17 @@ export class Setup {
       send(res, 410, { error: TIMED_OUT, timedOut: true });
       return true;
     }
-    if (path === "/setup/design" || path === "/setup/paint" || path === "/setup/check-jev" || path === "/setup/check-gemini" || path === "/setup/check-openai") {
+    if (this.codeLocked) {
+      send(res, 423, { error: "Too many wrong setup codes. Restart the engine container to open Setup again (a new code is printed in its log)." });
+      return true;
+    }
+    if (!this.codeOk(req)) {
+      this.badCodes++;
+      if (this.codeLocked) log.warn("setup locked after too many wrong setup codes; restart the engine container to open it again");
+      send(res, 401, { error: "Wrong setup code. It is printed in the engine's log: docker compose logs engine (or the engine container's logs in your host's Docker manager).", badCode: true });
+      return true;
+    }
+    if (path === "/setup/design" || path === "/setup/paint" || path === "/setup/check-jev" || path === "/setup/check-gemini" || path === "/setup/check-claude" || path === "/setup/check-openai") {
       const addr = clientAddr(req.headers["x-forwarded-for"], req.socket.remoteAddress);
       const n = (this.calls.get(addr) ?? 0) + 1;
       if (n > MAX_CALLS_PER_ADDR) {
@@ -262,6 +315,16 @@ export class Setup {
         return send(res, err ? 400 : 200, err ? { error: err } : { ok: true });
       }
 
+      case "/setup/check-code":
+        return send(res, 200, { ok: true });
+
+      case "/setup/check-claude": {
+        const key = String(body.key ?? "").trim();
+        if (key.length < 8) return send(res, 400, { error: "Paste your Anthropic API key." });
+        const err = await this.checkClaude(key, this.o.claudeModel ?? "claude-haiku-5-5");
+        return send(res, err ? 400 : 200, err ? { error: err } : { ok: true });
+      }
+
       case "/setup/check-gemini": {
         const key = String(body.key ?? "").trim();
         if (key.length < 8) return send(res, 400, { error: "Paste your Gemini API key." });
@@ -279,8 +342,8 @@ export class Setup {
       case "/setup/design": {
         const key = this.openaiKey(body);
         const description = String(body.description ?? "").trim();
-        if (!key) return send(res, 400, { error: "Designing a bee needs an OpenAI key." });
-        if (description.length < 3) return send(res, 400, { error: "Tell us how you want this bee to trade first." });
+        if (!key) return send(res, 400, { error: "Designing a wasp needs an OpenAI key." });
+        if (description.length < 3) return send(res, 400, { error: "Tell us how you want this wasp to trade first." });
         if (description.length > 400) return send(res, 400, { error: "Keep it under 400 characters." });
         if (this.designs >= MAX_DESIGNS) return send(res, 429, { error: "That is a lot of bees. Restart the engine to design more." });
         let known: string[];
@@ -301,11 +364,11 @@ export class Setup {
         const name = String(body.name ?? "").trim().slice(0, 24);
         const look = String(body.look ?? "").trim();
         if (!key) return send(res, 400, { error: "Portraits need an OpenAI key." });
-        if (!Number.isInteger(slot) || slot < 0 || slot > 2) return send(res, 400, { error: "bad bee" });
-        if (look.length < 3) return send(res, 400, { error: "Describe how your bee looks first." });
+        if (!Number.isInteger(slot) || slot < 0 || slot > 2) return send(res, 400, { error: "bad wasp" });
+        if (look.length < 3) return send(res, 400, { error: "Describe how your wasp looks first." });
         if (this.paints >= MAX_PAINTS) return send(res, 429, { error: "That is a lot of portraits. Restart the engine to paint more." });
         this.paints++;
-        const jpg = await this.paint(key, this.o.openai.imageModel, this.o.refDir, name || "a new bee", look);
+        const jpg = await this.paint(key, this.o.openai.imageModel, this.o.refDir, name || "a new wasp", look);
         const dir = imageDir(this.o.settingsPath);
         mkdirSync(dir, { recursive: true });
         writeFileSync(join(dir, `${BEES[slot]}.jpg`), jpg);
@@ -319,11 +382,17 @@ export class Setup {
           return send(res, 400, { error: `Something is missing or not allowed (${what}).` });
         }
         const b = parsed.data;
-        if (!b.openaiKey && !this.o.openai.apiKey) return send(res, 400, { error: "Your bees need an OpenAI key (it designs and paints them)." });
+        if (!b.openaiKey && !this.o.openai.apiKey) return send(res, 400, { error: "Your wasps need an OpenAI key (it designs and paints them)." });
         const missing = BEES.filter((slot) => imagePath(this.o.settingsPath, slot) === null);
-        if (missing.length) return send(res, 400, { error: "Every bee needs its portrait before you start." });
-        if (!b.geminiKey && !b.jevKey) return send(res, 400, { error: "Your bees need a Gemini key (or a Jev key) to make their calls." });
-        const keyErr = b.geminiKey ? await this.checkGemini(b.geminiKey, this.o.geminiModel) : await this.checkJev(b.jevKey!, this.o.jevModel);
+        if (missing.length) return send(res, 400, { error: "Every wasp needs its portrait before you start." });
+        if (b.engine === "llm" && !b.geminiKey && !b.anthropicKey && !b.jevKey) return send(res, 400, { error: "The model engine needs a Gemini, Claude or Jev key (or pick the rules engine)." });
+        const keyErr = b.geminiKey
+          ? await this.checkGemini(b.geminiKey, this.o.geminiModel)
+          : b.anthropicKey
+            ? await this.checkClaude(b.anthropicKey, this.o.claudeModel ?? "claude-haiku-5-5")
+            : b.jevKey
+              ? await this.checkJev(b.jevKey, this.o.jevModel)
+              : null;
         if (keyErr) return send(res, 400, { error: keyErr });
         // The page's coins and style are re-checked here: coins against OKX's list (when it can be read), the style
         // against the coins.
@@ -334,7 +403,9 @@ export class Setup {
         });
         const s: Settings = {
           version: 1,
+          engine: b.engine,
           ...(b.geminiKey ? { geminiKey: b.geminiKey } : {}),
+          ...(b.anthropicKey ? { anthropicKey: b.anthropicKey } : {}),
           ...(b.jevKey ? { jevKey: b.jevKey } : {}),
           ownerPasswordHash: hashPassword(b.ownerPassword),
           ...(b.openaiKey ? { openaiKey: b.openaiKey } : {}),
@@ -345,7 +416,7 @@ export class Setup {
         };
         saveSettings(this.o.settingsPath, s);
         this.saved = true;
-        log.info("setup saved; restarting into paper trading", { bees: bees.map((x) => `${x.name} (${STYLE_INFO[x.style].label})`), hive: b.hive });
+        log.info("setup saved; restarting into paper trading", { wasps: bees.map((x) => `${x.name} (${STYLE_INFO[x.style].label})`), engine: b.engine });
         send(res, 200, { ok: true });
         setTimeout(() => this.o.onSaved(), 750);
         return;
