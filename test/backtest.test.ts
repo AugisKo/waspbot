@@ -49,7 +49,8 @@ describe("metrics", () => {
     expect(drawdown(curve).maxDays).toBe(2); // below the day-1 peak on days 2 and 3
     expect(dailyCloses([{ ts: T0, equity: 1 }, { ts: T0 + 1000, equity: 2 }, { ts: T0 + D, equity: 3 }]).map((p) => p.equity)).toEqual([2, 3]);
     const m = computeMetrics(curve, [{ openedAt: 0, closedAt: 3_600_000, pnlUsd: 30, r: 1.5 }, { openedAt: 0, closedAt: 7_200_000, pnlUsd: -10, r: -0.5 }], { feesUsd: 2, fundingUsd: -1, exposurePct: 50 });
-    expect(m).toMatchObject({ totalReturnPct: 21, trades: 2, winRatePct: 50, avgR: 0.5, profitFactor: 3, avgHoldHours: 1.5, feeDragPct: 2 });
+    expect(m.totalReturnPct).toBeCloseTo(21, 8);
+    expect(m).toMatchObject({ trades: 2, winRatePct: 50, avgR: 0.5, profitFactor: 3, avgHoldHours: 1.5, feeDragPct: 2 });
     expect(m.sharpe).not.toBeNull();
   });
 });
