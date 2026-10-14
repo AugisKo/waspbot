@@ -313,6 +313,8 @@ export function fallbackText(reason: string | null | undefined, who: string): st
       return `${who} asked under a minute ago: holding`;
     case "single_option":
       return "one move on the menu";
+    case "engine_rules":
+      return "rules engine";
     default:
       return `${who} not used`;
   }

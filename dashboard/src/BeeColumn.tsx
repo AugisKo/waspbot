@@ -141,7 +141,7 @@ export function BeeColumn({ name, bee, curve, baseline, rank, gap, flash, choose
         ) : byCode(bee?.last) ? (
           <div className="required-call">
             <span className="required-choice">{bee!.last!.choice}</span>
-            <span className="dim">code chose · {fallbackText(bee!.last!.fallbackReason, chooser)}</span>
+            <span className="dim">{bee!.last!.fallbackReason === "engine_rules" ? "the rules engine chose" : `code chose · ${fallbackText(bee!.last!.fallbackReason, chooser)}`}</span>
           </div>
         ) : bee?.last?.required ? (
           <div className="required-call">
