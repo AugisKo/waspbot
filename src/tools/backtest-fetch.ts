@@ -1,9 +1,12 @@
-// pnpm backtest:fetch -- --coins BTC,ETH,SOL [--days 120] [--swap] [--data data/backtest/history]
+// pnpm backtest:fetch -- --coins BTC,ETH,SOL [--days 120] [--swap | --source yahoo] [--data data/backtest/history]
 // Downloads 15-minute candles and funding history from OKX's public API (no key) into one JSON file per coin.
 // Default: the coin's EEA X-Perp on eea.okx.com (what the wasps trade). X-Perps are young, so their history is short;
 // --swap reads the global USDT perpetual (<COIN>-USDT-SWAP on www.okx.com) instead, for longer tests. Prices of the two
 // track each other closely, but fees, funding and liquidity differ: say which one a result came from.
+// --source yahoo reads Yahoo Finance spot prices (BTC-USD, ...): handy where OKX is blocked, but only the last ~59 days
+// of 15m bars and no funding history (see src/backtest/yahoo.ts). Coin specs like "SUI:SUI20947-USD" pick a symbol.
 import { saveHistory, type CoinHistory, type Row } from "../backtest/data.js";
+import { fetchYahoo, YAHOO_MAX_15M_DAYS } from "../backtest/yahoo.js";
 
 function arg(name: string, def?: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -12,7 +15,12 @@ function arg(name: string, def?: string): string | undefined {
   return v && !v.startsWith("--") ? v : "true";
 }
 
-const coins = (arg("coins", "BTC,ETH,SOL") ?? "").split(/[\s,]+/).map((c) => c.trim().toUpperCase()).filter(Boolean);
+const coins = (arg("coins", "BTC,ETH,SOL") ?? "").split(/[\s,]+/).map((c) => c.trim()).filter(Boolean);
+const source = (arg("source", "okx") ?? "okx").toLowerCase();
+if (source !== "okx" && source !== "yahoo") {
+  process.stdout.write(`unknown --source ${source}: use okx (default) or yahoo\n`);
+  process.exit(1);
+}
 const days = Number(arg("days", "120"));
 const swap = arg("swap") === "true";
 const base = (arg("api") ?? (swap ? "https://www.okx.com" : "https://eea.okx.com")).replace(/\/+$/, "");
@@ -50,6 +58,26 @@ async function get<T>(path: string, q: Record<string, string>): Promise<T> {
     return j.data as T;
   }
   throw new Error(`${path}: rate limited`);
+}
+
+/** Yahoo: a browser-like user agent (it refuses bare clients), JSON back, the same clear network errors. */
+async function yahooJson(url: string): Promise<unknown> {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(url, { headers: { "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", accept: "application/json" }, signal: AbortSignal.timeout(20_000) });
+    } catch (err) {
+      throw netError(err, url);
+    }
+    if (res.status === 429) {
+      await sleep(2000 * (attempt + 1));
+      continue;
+    }
+    const body = await res.json().catch(() => null);
+    if (!res.ok && !body) throw new Error(`Yahoo answered HTTP ${res.status}`);
+    return body;
+  }
+  throw new Error("Yahoo: rate limited, try again in a minute");
 }
 
 async function instIdFor(coin: string): Promise<string> {
@@ -97,9 +125,11 @@ async function fetchCoin(coin: string): Promise<CoinHistory> {
   return { coin, source: `${instId} @ ${base}`, candles, funding: funding.filter((f) => f[0] >= since && Number.isFinite(f[1])).sort((x, y) => x[0] - y[0]) };
 }
 
-for (const coin of coins) {
+if (source === "yahoo" && days > YAHOO_MAX_15M_DAYS) process.stdout.write(`Yahoo keeps 15-minute bars for about ${YAHOO_MAX_15M_DAYS} days: fetching that much, not ${days}.\n`);
+for (const spec of coins) {
+  const coin = spec.split(":")[0]!.toUpperCase();
   try {
-    const h = await fetchCoin(coin);
+    const h = source === "yahoo" ? await fetchYahoo(spec, days, yahooJson) : await fetchCoin(coin);
     saveHistory(dir, h);
     const span = h.candles.length ? `${new Date(h.candles[0]![0]).toISOString().slice(0, 10)} → ${new Date(h.candles[h.candles.length - 1]![0]).toISOString().slice(0, 10)}` : "no bars";
     process.stdout.write(`${coin}: ${h.candles.length} bars (${span}), ${h.funding.length} funding rates, from ${h.source}\n`);
