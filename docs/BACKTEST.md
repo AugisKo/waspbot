@@ -15,6 +15,15 @@ This downloads 15-minute candles and funding history from OKX's public API (no k
 - Default: the coin's EEA **X-Perp** (what the wasps trade). X-Perps are young, so history may be short.
 - `--swap`: the global **USDT perpetual** (`BTC-USDT-SWAP` on www.okx.com) for longer tests. Prices track closely, but
   fees, funding and liquidity differ. Say which one a result came from (the report's JSON records the source).
+- `--source yahoo`: **Yahoo Finance spot prices** (`BTC-USD`), for networks where OKX is blocked. Only the last ~59 days of
+  15-minute bars (so about 49 days of test after the warm-up), and no funding history (0.01% per 8 h is assumed). Spot
+  and perpetual prices move almost together, so the signals carry over, but treat the result as an approximation. A
+  coin whose Yahoo ticker carries a number is given as `SUI:SUI20947-USD`. Yahoo has no official API: its chart feed
+  can change or rate-limit without notice, and its terms are for personal use.
+
+  ```powershell
+  pnpm backtest:fetch -- --coins "BTC,ETH,SOL" --source yahoo
+  ```
 
 ## Run
 
