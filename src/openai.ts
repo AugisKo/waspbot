@@ -1,7 +1,6 @@
-// OpenAI helpers for the Setup page: design a bee from the owner's sentence (one small, cheap text call), and paint its
-// portrait in the same art style as the original three (one image edit with the three portraits as references; they
-// are references only and are never shown for an owner's bee). Nothing here runs outside Setup.
-import { readFileSync } from "node:fs";
+// OpenAI helpers for the Setup page: design a wasp from the owner's sentence (one small, cheap text call), and paint its
+// portrait (one image call; optional style references in REF_DIR). Nothing here runs outside Setup.
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { STYLE_INFO, STYLES, type StyleId } from "./settings.js";
 
@@ -58,16 +57,16 @@ export async function designBee(apiKey: string, model: string, description: stri
         {
           role: "system",
           content:
-            "You design a cartoon trading bee for a paper-trading game on OKX perpetual futures, from its owner's description. Return:\n" +
+            "You design a cartoon trading wasp for a paper-trading game on OKX perpetual futures, from its owner's description. Return:\n" +
             "- name: a fun name, one or two words, max 20 characters, letters and spaces only. Never " +
             reserved +
-            " or any spelling of them (they belong to the official bees).\n" +
+            " or any spelling of them (they belong to the built-in wasps).\n" +
             "- tagline: 2-5 words starting with 'the', e.g. 'the sleepy dip hunter'.\n" +
-            "- rules: the bee's trading instructions in plain English, 2-4 short imperative sentences, max 450 characters. " +
+            "- rules: the wasp's trading instructions in plain English, 2-4 short imperative sentences, max 450 characters. " +
             "They are read by the decision model on every tick, so be concrete: which coins, when to go long or short, when to hold, when to get out. No prices or dates.\n" +
-            "- coins: tickers the bee is restricted to, only from the list below, [] if the owner wants any coin.\n" +
+            "- coins: tickers the wasp is restricted to, only from the list below, [] if the owner wants any coin.\n" +
             "- baseStyle: the built-in engine it runs on. bizzy only if coins are all in BTC, ETH, SOL, HYPE, XRP, SUI, DOGE, LINK; breezy only if coins are all in BTC, ETH; otherwise boozy.\n" +
-            "- look: one or two sentences on what the bee looks like (props, outfit, mood) for its portrait. No real people's faces, no logos, no text.\n" +
+            "- look: one or two sentences on what the wasp looks like (props, outfit, mood) for its portrait. No real people's faces, no logos, no text.\n" +
             "Never give financial advice.\n\nBuilt-in engines:\n" +
             styles +
             "\n\nCoins on OKX EEA right now: " +
@@ -107,33 +106,48 @@ export async function designBee(apiKey: string, model: string, description: stri
 }
 
 const PORTRAIT_BRIEF =
-  "Create a new character portrait in exactly the same art style as the reference images: a glossy 3D animated " +
-  "cartoon bee with big expressive eyes, fuzzy yellow and black stripes, translucent wings, one or two character " +
-  "props, dramatic rim lighting and a dark background with glowing particles, square head-and-shoulders framing. " +
-  "It must be a different bee from the references, clearly part of the same family. No text, no letters, no logos.";
+  "A character portrait of a cartoon wasp in a glossy 3D animated style: big expressive eyes, sleek yellow and black " +
+  "stripes, slim waist, translucent wings, one or two character props, dramatic rim lighting, a dark background with " +
+  "glowing particles, square head-and-shoulders framing. No text, no letters, no logos.";
+
+const REF_FILES = (refDir: string): string[] => {
+  try {
+    return readdirSync(refDir)
+      .filter((f) => /\.jpe?g$/i.test(f))
+      .sort()
+      .slice(0, 3);
+  } catch {
+    return [];
+  }
+};
 
 /**
- * Paints a portrait with the three original bees as style references. Returns PNG bytes.
- * `refDir` holds the reference portraits (the dashboard's default bee art).
+ * Paints a wasp portrait. Returns JPEG bytes. With style references in `refDir` (up to three .jpg files) the new
+ * portrait matches them (images/edits); without any, it is drawn from the text brief alone (images/generations).
  */
 export async function paintBee(apiKey: string, model: string, refDir: string, name: string, look: string, timeoutMs = 180_000): Promise<Buffer> {
-  const form = new FormData();
-  form.append("model", model);
-  form.append("prompt", `${PORTRAIT_BRIEF}\n\nThis bee is called ${name}. What it looks like and how it behaves: ${look.slice(0, 400)}`);
-  form.append("size", "1024x1024");
-  form.append("quality", "medium");
-  form.append("output_format", "jpeg");
-  form.append("output_compression", "88");
-  form.append("n", "1");
-  for (const f of ["bizzy.jpg", "breezy.jpg", "boozy.jpg"]) {
-    form.append("image[]", new Blob([readFileSync(join(refDir, f))], { type: "image/jpeg" }), f);
+  const prompt = `${PORTRAIT_BRIEF}\n\nThis wasp is called ${name}. What it looks like and how it behaves: ${look.slice(0, 400)}`;
+  const refs = REF_FILES(refDir);
+  let res: Response;
+  if (refs.length) {
+    const form = new FormData();
+    form.append("model", model);
+    form.append("prompt", `${prompt}\nMatch the art style of the reference images, but draw a new character.`);
+    form.append("size", "1024x1024");
+    form.append("quality", "medium");
+    form.append("output_format", "jpeg");
+    form.append("output_compression", "88");
+    form.append("n", "1");
+    for (const f of refs) form.append("image[]", new Blob([readFileSync(join(refDir, f))], { type: "image/jpeg" }), f);
+    res = await fetch(`${API}/images/edits`, { method: "POST", headers: { authorization: `Bearer ${apiKey}` }, body: form, signal: AbortSignal.timeout(timeoutMs) });
+  } else {
+    res = await fetch(`${API}/images/generations`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({ model, prompt, size: "1024x1024", quality: "medium", output_format: "jpeg", output_compression: 88, n: 1 }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
   }
-  const res = await fetch(`${API}/images/edits`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${apiKey}` },
-    body: form,
-    signal: AbortSignal.timeout(timeoutMs),
-  });
   if (!res.ok) await fail(res);
   const j = (await res.json()) as { data?: Array<{ b64_json?: string }> };
   const b64 = j.data?.[0]?.b64_json;

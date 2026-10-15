@@ -1,23 +1,15 @@
 {
-  "name": "beebots",
+  "name": "waspbot",
   "version": "2026.10.14",
   "private": true,
-  "description": "Three AI trading bees on OKX EEA X-Perps, picked by Gemini 4 Argon or Jev with a code fallback",
+  "description": "Three trading wasps on OKX EEA X-Perps: a rules engine or a model (Gemini, Claude, OpenAI, Jev) decides, a risk layer in code says yes or no, a news/knowledge layer can only make them more careful. Paper trading by default.",
   "type": "module",
   "engines": {
     "node": ">=22.13"
   },
   "packageManager": "pnpm@10.34.5",
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ],
-    "ignoredBuiltDependencies": [
-      "@okx_ai/okx-trade-cli"
-    ]
-  },
   "scripts": {
-    "dev": "DB_PATH=./data/bees-{mode}.sqlite tsx --env-file-if-exists=.env src/index.ts",
+    "dev": "tsx --env-file-if-exists=.env src/index.ts",
     "start": "node dist/index.js",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
@@ -31,7 +23,9 @@
     "effective-config": "tsx src/tools/effective-config.ts",
     "keycheck": "tsx --env-file-if-exists=.env src/tools/keycheck.ts",
     "demo:roundtrip": "tsx --env-file-if-exists=.env src/tools/demo-roundtrip.ts",
-    "demo:close": "tsx --env-file-if-exists=.env src/tools/demo-close.ts"
+    "demo:close": "tsx --env-file-if-exists=.env src/tools/demo-close.ts",
+    "backtest": "tsx src/tools/backtest.ts",
+    "backtest:fetch": "tsx src/tools/backtest-fetch.ts"
   },
   "dependencies": {
     "@okx_ai/okx-trade-cli": "1.4.8",

@@ -1,5 +1,5 @@
 // boozy-bee: liquid multi-horizon impulse momentum (long & short) with strict volume/spread gates,
-// 30-min minimum hold (no 24h lockup), 1x entry + single +0.5x pyramid, and neverForce.
+// 30-min minimum hold (no 24h lockup), 1x entry + single +0.5x pyramid.
 import type { CoinStats, MarketView } from "../market/types.js";
 import { atrStop, MARGIN_HEADROOM, maxNotionalUsd, minutesSince, positionNotional, r2 } from "./common.js";
 import type { BeeBrain, BeeContext, Menu, Side } from "./types.js";
@@ -101,7 +101,6 @@ export const BOOZY_PROFIT_LOCK = [
 
 export const boozy: BeeBrain = {
   id: "boozy",
-  neverForce: true,
   requiresStrictSetup: true,
   fundingVetoLongZ: 1.5,
   profitLock: BOOZY_PROFIT_LOCK,
@@ -213,9 +212,6 @@ export const boozy: BeeBrain = {
     return m;
   },
 
-  forcedEntry() {
-    return null;
-  },
 
   sizeFrac(intent) {
     return intent.sizeFrac;

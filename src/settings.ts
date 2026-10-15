@@ -1,41 +1,45 @@
-// What the first-run Setup page saves: the chooser key (Gemini or Jev), an optional OpenAI key, the risk acknowledgement, the three
-// bees (name, trading style, tagline, optional generated portrait), and whether to join the Hive. Stored as one JSON file in the data volume,
+// What the first-run Setup page saves: the decision engine and its key (Gemini, Claude or Jev; none for the rules engine), the OpenAI
+// key, the risk acknowledgement, the three wasps (name, trading style, tagline, generated portrait), and whether to join a Hive. Stored as one JSON file in the data volume,
 // readable by the engine's user only. Secrets in here are never sent to the dashboard or written to a log.
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { z } from "zod";
 
 export const STYLES = ["bizzy", "breezy", "boozy"] as const;
-/** A trading style is one of the three built-in strategies, named after the bee that first traded it. */
+/**
+ * A trading style is one of the three built-in strategies. The ids (bizzy, breezy, boozy) are internal keys kept from the
+ * upstream project so existing settings, databases and env knobs (BIZZY_*, ...) keep working; people see the labels
+ * and the wasps' names.
+ */
 export type StyleId = (typeof STYLES)[number];
 
 export const STYLE_INFO: Record<StyleId, { label: string; blurb: string; name: string; tagline: string }> = {
   bizzy: {
     label: "Breakout",
     blurb: "Grinds both ways on 8 liquid majors: fades stretched moves, and takes confirmed daily breakouts on BTC, ETH, SOL or HYPE. Quick exits.",
-    name: "Bizzy",
-    tagline: "the grinder",
+    name: "Jacket",
+    tagline: "the striker",
   },
   breezy: {
     label: "Trend",
     blurb: "Trend following on BTC and ETH only. Sits in cash in chop, rides winners, sized by volatility. The calm one.",
-    name: "Breezy",
-    tagline: "the calculated one",
+    name: "Vespa",
+    tagline: "the patient one",
   },
   boozy: {
     label: "Momentum",
     blurb: "Chases fresh momentum on high-volume coins, long or short, and adds once to a winner. Waits flat when nothing moves.",
-    name: "Boozy",
-    tagline: "the degen",
+    name: "Hornet",
+    tagline: "the chaser",
   },
 };
 
-/** The original three are the official bees: owners' bees may not use their names ("Bizzy", "bizzy-bee", "Bizzie Bee"). */
+/** The three built-in wasps keep their names: owners' wasps may not use them ("Hornet", "hornet-wasp", "Hornett"). */
 const squash = (s: string) =>
   s
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, "")
-    .replace(/bee$/, "")
+    .replace(/(wasp|bee)$/, "")
     .replace(/(.)\1+/g, "$1")
     .replace(/(ie|ey|i)$/, "y");
 const RESERVED = new Set(STYLES.map((s) => squash(STYLE_INFO[s].name)));
@@ -79,6 +83,10 @@ export const SettingsSchema = z.object({
   geminiKey: z.string().trim().min(8).optional(),
   jevKey: z.string().trim().min(8).optional(),
   openaiKey: z.string().trim().min(8).optional(),
+  /** Claude (Anthropic) key for the chooser, the news digest and web search. */
+  anthropicKey: z.string().trim().min(8).optional(),
+  /** The decision engine picked on Setup. Absent = "llm" with a model key, else "rules". */
+  engine: z.enum(["rules", "llm"]).optional(),
   /** The owner password, as a salted scrypt hash (gate.ts). Absent in files saved before it existed. */
   ownerPasswordHash: z.string().startsWith("scrypt$").optional(),
   /** When the operator ticked the risk statements on the Setup page. */

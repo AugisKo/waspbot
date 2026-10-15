@@ -1,8 +1,13 @@
-// The deterministic risk layer (hard rule 2: LLM chooses, code decides).
+// The deterministic risk layer (hard rule 2: the chooser picks, code decides).
 // Pure: no I/O, no clock, no randomness. Every veto, shrink and force says why.
+// On top of each wasp's own caps it applies portfolio-level rules (a drawdown breaker, a net-exposure cap, a limit on
+// wasps crowding into one coin), closes positions when market data has gone stale, keeps trend-following styles out of
+// the wrong market regime, and lets the knowledge layer (news digest, event calendar, trade memory) veto or shrink an
+// opening move. Nothing here ever opens a position on its own: a wasp with no setup stays flat.
 
 import { MARGIN_HEADROOM, maxNotionalUsd, minutesSince, positionNotional } from "./bees/common.js";
-import type { Action, BeeBrain, BeeContext, CapReason, Intent } from "./bees/types.js";
+import { coinOf, type Action, type BeeBrain, type BeeContext, type CapReason, type Intent, type Side } from "./bees/types.js";
+import { regimeVeto } from "./market/regime.js";
 
 export type { Action } from "./bees/types.js";
 
@@ -29,6 +34,37 @@ export interface RiskInput {
   /** Age of the last full market refresh. */
   dataAgeMs: number;
   maxDataAgeMs: number;
+  /** Market data older than this closes any open position (0 = off). */
+  staleFlattenMs?: number;
+  /** Portfolio-level state across all wasps (absent = no portfolio rules, e.g. in older tests). */
+  portfolio?: PortfolioState;
+  /** Keep trend-following styles out of the wrong regime (market/regime.ts). */
+  regimeFilter?: boolean;
+  /** The knowledge layer's verdict on an opening move. It may veto or shrink, never open. */
+  knowledge?: (instId: string, side: Side) => KnowledgeVerdict;
+}
+
+export interface PortfolioState {
+  /** Set while the portfolio breaker is tripped: every wasp goes flat and opens nothing. */
+  halted: string | null;
+  /** Equity of all wasps together. */
+  totalEquityUsd: number;
+  /** Signed notional of the OTHER wasps (long +, short -). */
+  othersNetUsd: number;
+  /** Max |net notional| across all wasps, as a multiple of total equity. */
+  netExposureMaxX: number;
+  /** How many OTHER wasps hold each coin, per side. */
+  othersByCoin: Record<string, { long: number; short: number }>;
+  /** Max wasps in the same coin on the same side (this one included). */
+  sameCoinMax: number;
+}
+
+export interface KnowledgeVerdict {
+  veto: string | null;
+  /** 0..1. 1 = no change. */
+  sizeMult: number;
+  /** Short reasons for the dashboard ("CPI in 40m", "news: exploit"). */
+  notes: string[];
 }
 
 export interface RiskResult {
@@ -89,6 +125,38 @@ interface OpenCheck {
   notionalUsd?: number;
 }
 
+/** Room left under the portfolio's net-exposure cap for this wasp's position on `side`, in USD notional. */
+function exposureRoom(input: RiskInput, side: Side, keepOwnUsd: number): number {
+  const pf = input.portfolio;
+  if (!pf) return Infinity;
+  const limit = pf.netExposureMaxX * Math.max(0, pf.totalEquityUsd);
+  const dir = side === "long" ? 1 : -1;
+  // |others + own| <= limit  =>  own (in `side` direction) <= limit - dir x others
+  return Math.max(0, limit - dir * pf.othersNetUsd - keepOwnUsd);
+}
+
+/** Portfolio, regime and knowledge gates shared by opens, switches and adds. Returns a veto, or the size multiplier. */
+function portfolioGates(input: RiskInput, instId: string, side: Side, isAdd: boolean): { why: string } | { mult: number; notes: string[] } {
+  const { brain, ctx } = input;
+  const coin = coinOf(instId);
+  const pf = input.portfolio;
+  if (pf && !isAdd) {
+    const o = pf.othersByCoin[coin];
+    if (o && o[side] + 1 > pf.sameCoinMax) return { why: `crowded ${coin} ${side} (${o[side]} other wasp${o[side] === 1 ? "" : "s"})` };
+  }
+  if (input.regimeFilter && !isAdd) {
+    const r = ctx.view.stats.get(instId)?.regime;
+    const v = regimeVeto(brain.id, side, r);
+    if (v) return { why: v };
+  }
+  if (input.knowledge) {
+    const k = input.knowledge(instId, side);
+    if (k.veto) return { why: `knowledge: ${k.veto}` };
+    return { mult: Math.max(0, Math.min(1, k.sizeMult)), notes: k.notes };
+  }
+  return { mult: 1, notes: [] };
+}
+
 /** Spread gate, funding veto, min size and the size cap for an open/switch/add. */
 function checkOpen(intent: Intent, input: RiskInput, conviction: number): OpenCheck {
   const { ctx, brain, sizeMult } = input;
@@ -105,8 +173,11 @@ function checkOpen(intent: Intent, input: RiskInput, conviction: number): OpenCh
     // Cap add room against realised collateral (min of equityUsd and cashUsd) so unbooked uPnL never causes OKX 51008 rejections.
     const collateralUsd = Math.max(0, Math.min(bee.equityUsd, bee.cashUsd));
     const addMax = Math.min(cfg.risk.maxLeverage * collateralUsd * MARGIN_HEADROOM, cfg.risk.maxNotionalUsdPerBee) * sizeMult;
-    const room = addMax - positionNotional(p, s.mid, inst.ctVal);
-    const n = Math.min(intent.sizeFrac * addMax, room);
+    const held = positionNotional(p, s.mid, inst.ctVal);
+    const room = addMax - held;
+    const g = portfolioGates(input, p.instId, p.side, true);
+    if ("why" in g) return { ok: false, why: g.why };
+    const n = Math.min(intent.sizeFrac * addMax * g.mult, room, exposureRoom(input, p.side, held));
     const minUsd = inst.minSz * inst.ctVal * s.mid;
     if (n < minUsd) return { ok: false, why: "size_cap" };
     return { ok: true, notionalUsd: n };
@@ -120,10 +191,13 @@ function checkOpen(intent: Intent, input: RiskInput, conviction: number): OpenCh
   if (intent.side === "long" && brain.fundingVetoLongZ !== undefined && s.fundingZ !== null && s.fundingZ > brain.fundingVetoLongZ) {
     return { ok: false, why: `funding_veto ${s.coin} z=${s.fundingZ.toFixed(1)}` };
   }
+  const g = portfolioGates(input, intent.instId, intent.side, false);
+  if ("why" in g) return { ok: false, why: g.why };
   const frac = Math.max(0, Math.min(1, brain.sizeFrac(intent, conviction, ctx)));
-  const n = Math.min(frac * max, max);
+  // A switch closes the current position first, so its notional does not count against the room.
+  const n = Math.min(frac * max * g.mult, max, exposureRoom(input, intent.side, 0));
   const minUsd = inst.minSz * inst.ctVal * s.mid;
-  if (n < minUsd) return { ok: false, why: `below_min_size ${s.coin} $${n.toFixed(2)} < $${minUsd.toFixed(2)}` };
+  if (n < minUsd) return { ok: false, why: n < frac * max * g.mult ? `exposure_cap ${s.coin} room $${n.toFixed(0)}` : `below_min_size ${s.coin} $${n.toFixed(2)} < $${minUsd.toFixed(2)}` };
   return { ok: true, notionalUsd: n };
 }
 
@@ -165,7 +239,19 @@ export function applyRisk(input: RiskInput): RiskResult {
     return out(NONE, { vetoedBy: proposal ? cap : null, status });
   }
 
-  // 2. Code stops fire whatever Jev says, and even when Jev is down.
+  // 1b. Portfolio breaker: every wasp goes flat and stays flat until the owner resumes.
+  if (input.portfolio?.halted) {
+    const status = `portfolio halted: ${input.portfolio.halted}`;
+    if (p) return out({ kind: "close", reason: "portfolio_halt" }, { forcedBy: "portfolio_halt", vetoedBy: proposal ? "portfolio_halt" : null, status });
+    return out(NONE, { vetoedBy: proposal ? "portfolio_halt" : null, status });
+  }
+
+  // 1c. Market data gone stale (feed down): a wasp does not hold a position it cannot see.
+  if (p && input.staleFlattenMs && input.staleFlattenMs > 0 && input.dataAgeMs > input.staleFlattenMs) {
+    return out({ kind: "close", reason: "stale_data" }, { forcedBy: "stale_data", vetoedBy: proposal ? "stale_data" : null, status: `market data ${Math.round(input.dataAgeMs / 60_000)} min old: closing ${p.coin}` });
+  }
+
+  // 2. Code stops fire whatever the chooser says, and even when it is down.
   if (p) {
     const s = view.stats.get(p.instId);
     if (s && p.stopPx !== null) {
@@ -179,7 +265,7 @@ export function applyRisk(input: RiskInput): RiskResult {
   }
 
   // 3. Jev fail-closed: hold whatever we have, open nothing.
-  if (jev === "daily_cap") return out(NONE, { vetoedBy: "jev_daily_cap", status: "Jev daily cap hit: all bees hold" });
+  if (jev === "daily_cap") return out(NONE, { vetoedBy: "jev_daily_cap", status: "model daily cap hit: all wasps hold" });
   if (jev === "unreachable" || (jev === "ok" && !proposal)) return out(NONE, { vetoedBy: "jev_unreachable", status: "Jev unreachable: holding" });
 
   let intent: Intent = proposal?.intent ?? { kind: "hold" };
@@ -217,24 +303,13 @@ export function applyRisk(input: RiskInput): RiskResult {
   let forcedBy: string | null = null;
   let status = !proposal ? (brain.idleStatus?.(ctx) ?? "no valid options") : vetoedBy ? `wanted ${proposal.label}, code said no: ${vetoedBy}` : proposal.label;
 
-  // 6. Never flat for long (only for brains without neverForce, and never bypassing an active cooldown).
+  // 6. Flat with nothing to do: say why. Nothing is ever forced open (the old "never flat for long" rule is gone).
   if (!p && action.kind === "none") {
     const flatMin = minutesSince(bee.flatSince, now);
     if (cap) status = capStatus(cap, ctx);
     else if (input.dataAgeMs > input.maxDataAgeMs) status = "stale market data: waiting";
-    else if (brain.neverForce) {
-      /* waits for its own setup; status already says what it is waiting for */
-    } else if (cooldownLeft > 0) {
-      status = vetoedBy ? status : `cooling down (${Math.ceil(cooldownLeft)}m left)`;
-    } else if (flatMin >= knobs.maxFlatMinutes) {
-      const f = brain.forcedEntry(ctx);
-      const c = f ? checkOpen(f, input, 0) : { ok: false, why: "no_candidate" };
-      if (f && c.ok) {
-        action = toAction(f, c.notionalUsd);
-        forcedBy = "max_flat";
-        status = `forced in after ${flatMin.toFixed(0)} min flat`;
-      } else status = `flat, cannot force: ${c.why}`;
-    } else status = `${status} (flat ${flatMin.toFixed(0)}/${knobs.maxFlatMinutes} min)`;
+    else if (cooldownLeft > 0 && !vetoedBy) status = `cooling down (${Math.ceil(cooldownLeft)}m left)`;
+    else if (proposal && !vetoedBy) status = `${status} (flat ${flatMin.toFixed(0)} min)`;
   }
   if (p && action.kind === "none" && cap) status = capStatus(cap, ctx);
 

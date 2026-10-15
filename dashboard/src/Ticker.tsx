@@ -31,8 +31,8 @@ const Row = memo(function Row({ d, chooser }: { d: DecisionEvent; chooser: strin
       </div>
       {code ? (
         <div className="tick-pulse num">
-          <span className="side flat">CODE</span>
-          <span className="dim">{fallbackText(d.fallbackReason, chooser)} · code chose</span>
+          <span className="side flat">{d.fallbackReason === "engine_rules" ? "RULES" : "CODE"}</span>
+          <span className="dim">{d.fallbackReason === "engine_rules" ? "the rules engine chose" : `${fallbackText(d.fallbackReason, chooser)} · code chose`}</span>
         </div>
       ) : d.required ? (
         <div className="tick-pulse num">

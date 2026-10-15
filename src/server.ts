@@ -1,4 +1,6 @@
-// Read-only HTTP: GET /events (SSE), /snapshot, /history?n=, /equity?days=, /visit, /health, /profile, /bee-image/<bee>.
+// Read-only HTTP: GET /events (SSE), /snapshot, /history?n=, /equity?days=, /visit, /health, /profile, /bee-image/<bee>,
+// /knowledge (news, digests, events, trade-memory stats). GET /controls is public; POST /controls and /controls/resume
+// need the owner password (controls.ts).
 // Never config or keys. The exceptions: /setup/*, which only exists before first-run Setup is done (setup.ts), and
 // POST /hive/join and /hive/leave, which need the owner password (gate.ts, hive.ts). GET /hive/status is public and holds no key.
 // The Beekeeper (keeper.ts, docs/BEEKEEPER.md): GET /keeper/scorecard is public; POST /keeper/connect, /keeper/disconnect,
@@ -11,6 +13,7 @@ import type { Db } from "./db.js";
 import type { EventBus } from "./events.js";
 import type { Hive } from "./hive.js";
 import type { KeeperHttp } from "./keeper-http.js";
+import { handleControls, type ControlsHttpDeps } from "./controls.js";
 import { handleLab, type LabDoor } from "./lab/door.js";
 import { log } from "./log.js";
 import { redact } from "./redact.js";
@@ -36,6 +39,10 @@ export interface ServerDeps {
   keeper?: Pick<KeeperHttp, "handle" | "publicState">;
   /** Present once trading: the door a Beekeeper rewrite comes through. Absent = every /lab path is a 404. */
   lab?: LabDoor | null;
+  /** Present once trading: runtime switches (GET public, POST owner password). */
+  controls?: ControlsHttpDeps;
+  /** Present once trading: recent news, digests, upcoming events, trade-memory stats. Public, no secrets. */
+  knowledge?: () => unknown;
   /** Names, styles and portraits of the bees, for the dashboard. No secrets. */
   profile: () => unknown;
   /** File path of a bee's generated portrait, or null. */
@@ -76,6 +83,14 @@ export function startServer(deps: ServerDeps, port: number, bind: string): Serve
       return;
     }
     if (handleLab(req, res, url, deps.lab ?? null)) return;
+    if (deps.controls && url.pathname.startsWith("/controls")) {
+      void handleControls(req, res, url.pathname, deps.controls)
+        .then((handled) => {
+          if (!handled) json(res, 404, { error: "not found" });
+        })
+        .catch(() => json(res, 500, { error: "controls request failed" }));
+      return;
+    }
     if (deps.keeper && url.pathname.startsWith("/keeper/")) {
       void deps.keeper
         .handle(req, res, url.pathname)
@@ -104,6 +119,8 @@ export function startServer(deps: ServerDeps, port: number, bind: string): Serve
     }
 
     switch (url.pathname) {
+      case "/knowledge":
+        return deps.knowledge ? json(res, 200, deps.knowledge()) : json(res, 404, { error: "not found" });
       case "/health": {
         const h = e.health();
         return json(res, h.ok ? 200 : 503, h);

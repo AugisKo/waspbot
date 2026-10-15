@@ -1,6 +1,6 @@
 // bizzy-bee: the grinder. Dual-engine intraday Bollinger+RSI mean reversion (long & short)
 // plus confirmed Larry Williams breakouts on liquid majors, at 1x equity (0.5 maxNotional),
-// with a 4h time stop and neverForce.
+// with a 4h time stop.
 import type { CoinStats } from "../market/types.js";
 import { atrStop, minutesSince, r2 } from "./common.js";
 import type { BeeBrain, BeeContext, Menu, Side } from "./types.js";
@@ -81,7 +81,6 @@ export const BIZZY_PROFIT_LOCK = [
 
 export const bizzy: BeeBrain = {
   id: "bizzy",
-  neverForce: true,
   requiresStrictSetup: true,
   fundingVetoLongZ: FUNDING_Z_BLOCK_LONG,
   profitLock: BIZZY_PROFIT_LOCK,
@@ -178,9 +177,6 @@ export const bizzy: BeeBrain = {
     return m;
   },
 
-  forcedEntry() {
-    return null;
-  },
 
   sizeFrac(intent) {
     return intent.sizeFrac;

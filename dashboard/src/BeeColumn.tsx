@@ -133,7 +133,7 @@ export function BeeColumn({ name, bee, curve, baseline, rank, gap, flash, choose
 
       <div className="last">
         <div className="last-head">
-          <span className="eyebrow">{bee?.last?.decidedBy === "gemini" || bee?.last?.decidedBy === "jev" ? `${chooser}’s last call` : "Last call"}</span>
+          <span className="eyebrow">{bee?.last?.decidedBy && !["code", "rules"].includes(bee.last.decidedBy) ? `${chooser}’s last call` : "Last call"}</span>
           {bee?.last?.latencyMs != null && <span className="dim num">{bee.last.latencyMs} ms</span>}
         </div>
         {cap === "trade_cap" || cap === "fee_budget" ? (
@@ -141,7 +141,7 @@ export function BeeColumn({ name, bee, curve, baseline, rank, gap, flash, choose
         ) : byCode(bee?.last) ? (
           <div className="required-call">
             <span className="required-choice">{bee!.last!.choice}</span>
-            <span className="dim">code chose · {fallbackText(bee!.last!.fallbackReason, chooser)}</span>
+            <span className="dim">{bee!.last!.fallbackReason === "engine_rules" ? "the rules engine chose" : `code chose · ${fallbackText(bee!.last!.fallbackReason, chooser)}`}</span>
           </div>
         ) : bee?.last?.required ? (
           <div className="required-call">

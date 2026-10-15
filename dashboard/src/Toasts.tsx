@@ -23,7 +23,7 @@ export function Toasts({ toasts, keeper }: { toasts: Toast[]; keeper: KeeperToas
         const meta = BEE_META[entry.bee!];
         return (
           <div key={id} className="toast toast-keeper" style={{ ["--bee" as string]: meta.color, ["--bee-glow" as string]: meta.glow }}>
-            <img src="/beekeeper.jpg" alt="" />
+            <img src="/keeper.svg" alt="" />
             <div className="toast-body">
               <div className="toast-title">The Beekeeper rewrote {meta.title}</div>
               <div className="toast-sub">“{entry.quip}”</div>

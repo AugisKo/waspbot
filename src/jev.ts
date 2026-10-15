@@ -1,17 +1,18 @@
-// The chooser: picks one move from each bee's menu. Two remote models are supported, plus a code fallback:
-// - Gemini 4 Argon ("gemini-4-argon") via the Gemini API generateContent endpoint, when GEMINI_API_KEY is set. Hard
-//   daily USD cap with a worst-case reservation before every call, a per-bee call interval, snapshot caching. The key
-//   travels only in the x-goog-api-key header, never in the URL or the prompt.
-// - Jev (TypeSafe AI), when only a Jev key is set (installs set up before Gemini support keep working). Its daily cap
-//   is a soft threshold: see decideWithClient.
-// - A deterministic pure-code chooser whenever there is no key, the daily cap (or a reservation) refuses the call, a
-//   call fails, or the model answers off the menu. Every answer says who made it (`source`) and, for code, why
-//   (`fallbackReason`), so the engine can record and show it.
+// The chooser: picks one move from each wasp's menu. It runs in one of two engines, switchable at runtime:
+// - "rules": the deterministic pure-code chooser only. Free, reproducible and fully backtestable.
+// - "llm": a hosted model picks, through one adapter per provider (llm/adapters.ts):
+//     Gemini, Claude (Anthropic) or OpenAI, with a hard daily USD cap (a worst-case reservation before every call), a
+//     per-wasp call interval and snapshot caching; or Jev (TypeSafe AI), whose daily cap is a soft threshold (see
+//     decideWithClient). Keys travel only in headers, never in URLs or prompts.
+//   Whenever the model has no key, the cap (or a reservation) refuses the call, a call fails, or the model answers off
+//   the menu, the code chooser answers instead.
+// Every answer says who made it (`source`) and, for code, why (`fallbackReason`), so the engine can record and show it.
 
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import type * as SDK from "@typesafe-ai/sdk" with { "resolution-mode": "require" };
 import type { Menu } from "./bees/types.js";
+import { callLlm, chargedUsd as llmCharged, GEMINI_BASE, inputTokenBound, LlmHttpError, requestBody, worstCaseUsd, type LlmProvider, type LlmRequest } from "./llm/adapters.js";
 import { log } from "./log.js";
 import { redactString, safeError } from "./redact.js";
 
@@ -19,35 +20,41 @@ import { redactString, safeError } from "./redact.js";
 const require = createRequire(import.meta.url);
 const { TypeSafeClient, choice, score } = require("@typesafe-ai/sdk") as typeof SDK;
 
-export const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
+export { GEMINI_BASE, inputTokenBound } from "./llm/adapters.js";
 /** Room for a short thinking pass plus the JSON answer; also the worst case the cap check prices in. */
-export const GEMINI_MAX_OUTPUT_TOKENS = 1024;
-/**
- * Guaranteed upper bound on the input tokens of a request: one token per UTF-8 byte of the whole request body, plus a
- * margin for the model's own framing. Gemini's tokenizer never yields more tokens than bytes (a token covers at least
- * one byte); character ratios such as "4 characters per token" are only averages (https://ai.google.dev/gemini-api/docs/tokens).
- */
-export const inputTokenBound = (body: string): number => Buffer.byteLength(body, "utf8") + 64;
+export const LLM_MAX_OUTPUT_TOKENS = 1024;
+/** Kept for older imports. */
+export const GEMINI_MAX_OUTPUT_TOKENS = LLM_MAX_OUTPUT_TOKENS;
+
+/** Which decision engine is on: the rules alone, or a model (with the rules as its fallback). */
+export type DecisionEngine = "rules" | "llm";
+/** Every provider the chooser knows. "code" = no model configured. */
+export type ChooserProviderId = LlmProvider | "jev" | "code";
 
 export interface JevAsk {
   strategy: string;
   state: Record<string, unknown>;
   menu: Menu;
   convictionLabels: readonly string[];
-  /** Who is asking (the bee id). Paces paid calls per bee; omitted = one shared pace. */
+  /** Who is asking (the wasp id). Paces paid calls per wasp; omitted = one shared pace. */
   key?: string;
+  /**
+   * Extra context for the model only (knowledge layer: news digest, events, similar past trades, owner notes). Never
+   * read by the code chooser, never part of the cache key's market state.
+   */
+  context?: string;
 }
 
 /** Who actually made a call: the model, Jev, the deterministic code chooser, or the rules (one legal hold). */
-export type DecisionSource = "gemini" | "jev" | "code" | "rules";
+export type DecisionSource = "gemini" | "claude" | "openai" | "jev" | "code" | "rules";
 /**
  * Why the code chooser answered instead of the model:
  * no_key, cap (today's spend reached the cap), reservation (this call's worst case did not fit in what is left of the
  * cap, so it was refused before it was sent), backoff (after recent failures), timeout, error (HTTP or network error),
  * off_menu (the model answered something not on the menu), single_option (one move on the menu, nothing to ask),
- * paced (asked less than GEMINI_MIN_INTERVAL_MS ago: keep what you have).
+ * paced (asked less than the minimum interval ago: keep what you have), engine_rules (the rules engine is selected).
  */
-export type FallbackReason = "no_key" | "cap" | "reservation" | "backoff" | "timeout" | "error" | "off_menu" | "single_option" | "paced";
+export type FallbackReason = "no_key" | "cap" | "reservation" | "backoff" | "timeout" | "error" | "off_menu" | "single_option" | "paced" | "engine_rules";
 
 export interface JevAnswer {
   ok: true;
@@ -81,8 +88,10 @@ export interface SystemOne {
 }
 
 export interface JevOpts {
-  /** Which remote model the key is for. "code" (or no key) = the deterministic code chooser only. */
-  provider?: "gemini" | "jev" | "code";
+  /** "rules" = the code chooser only, whatever key is set. Default "llm". */
+  engine?: DecisionEngine;
+  /** Which remote model the key is for. "code" (or no key) = the deterministic code chooser only. Default "gemini". */
+  provider?: ChooserProviderId;
   apiKey: string;
   model: string;
   timeoutMs: number;
@@ -91,7 +100,7 @@ export interface JevOpts {
   usdPerMTok: number;
   /** USD per million output tokens, thinking included. Defaults to usdPerMTok. */
   usdPerMTokOut?: number;
-  /** Minimum gap between paid Gemini calls for one bee; in between, the bee holds. 0 = every tick. */
+  /** Minimum gap between paid model calls for one wasp; in between, the wasp holds. 0 = every tick. */
   minIntervalMs?: number;
   /** Optional Gemini thinkingConfig.thinkingLevel (omitted when unset). */
   thinkingLevel?: string;
@@ -184,19 +193,6 @@ export function fallbackDecide(ask: JevAsk, latencyMs = 0, reason: FallbackReaso
   };
 }
 
-interface GeminiResponse {
-  candidates?: Array<{
-    content?: { parts?: Array<{ text?: string; thought?: boolean }> };
-    finishReason?: string;
-  }>;
-  usageMetadata?: {
-    promptTokenCount?: number;
-    candidatesTokenCount?: number;
-    thoughtsTokenCount?: number;
-    totalTokenCount?: number;
-  };
-}
-
 /** Parse the model's JSON strictly: an object whose `choice` is exactly one of the menu labels, nothing else. */
 export function parseChoice(text: string, labels: readonly string[], maxConv: number): { choice: string; confidence: number; conviction: number } | null {
   let parsed: unknown;
@@ -235,20 +231,46 @@ export class Jev {
   private refusedDay: string | null = null;
 
   constructor(private opts: JevOpts) {
-    this.client =
-      opts.client ??
-      (opts.provider === "jev" && opts.apiKey
-        ? new TypeSafeClient({
-            apiKey: opts.apiKey,
-            defaultModel: opts.model,
-            timeout: opts.timeoutMs,
-            retry: { maxRetries: 0 }, // we back off ourselves; a tick must not wait on SDK retries
-            logLevel: "off", // SDK debug logging would print request bodies
-          })
-        : undefined);
+    this.client = buildClient(opts);
     this.now = opts.now ?? Date.now;
     this.day = dayKey(this.now());
     this.spentTodayUsd = opts.spentTodayUsd ?? 0;
+  }
+
+  /** The engine in force right now ("rules" or "llm"). */
+  get engine(): DecisionEngine {
+    return this.opts.engine ?? "llm";
+  }
+
+  /** The model provider configured right now ("code" when there is none). */
+  get provider(): ChooserProviderId {
+    if (!this.opts.apiKey && !this.opts.client) return "code";
+    return this.opts.provider ?? "gemini";
+  }
+
+  get model(): string {
+    return this.opts.model;
+  }
+
+  get dailyUsdCap(): number {
+    return this.opts.dailyUsdCap;
+  }
+
+  /**
+   * Switch engine or provider at runtime (dashboard controls). Spend today, reservations in flight and the ledger carry
+   * over, so the daily cap still covers the whole day; the snapshot cache, pacing and backoff start fresh.
+   */
+  reconfigure(next: Partial<Pick<JevOpts, "engine" | "provider" | "apiKey" | "model" | "timeoutMs" | "dailyUsdCap" | "usdPerMTok" | "usdPerMTokOut" | "minIntervalMs" | "thinkingLevel">>): void {
+    const providerChanged = next.provider !== undefined && next.provider !== this.opts.provider;
+    this.opts = { ...this.opts, ...next };
+    if (providerChanged || next.apiKey !== undefined || next.model !== undefined) {
+      this.client = this.opts.provider === "jev" ? buildClient({ ...this.opts, client: undefined }) : undefined;
+    }
+    this.cache.clear();
+    this.lastCallAt.clear();
+    this.backoffStep = 0;
+    this.backoffUntil = 0;
+    this.downSince = null;
   }
 
   get capTripped(): boolean {
@@ -303,7 +325,7 @@ export class Jev {
 
   async decide(ask: JevAsk): Promise<JevResult> {
     const r = await this.decideInner(ask);
-    if (r.ok && r.source === "code" && r.fallbackReason && r.fallbackReason !== "single_option" && r.fallbackReason !== "paced") {
+    if (r.ok && r.source === "code" && r.fallbackReason && r.fallbackReason !== "single_option" && r.fallbackReason !== "paced" && r.fallbackReason !== "engine_rules") {
       this.lastFallback = { reason: r.fallbackReason, at: this.now() };
     }
     return r;
@@ -316,21 +338,25 @@ export class Jev {
       return { ok: false, reason: "error", error: { code: "EMPTY_MENU", message: "no valid options" }, latencyMs: 0 };
     }
 
-    // Jev, or an injected fake chooser (tests, e2e:fake-jev). Same cap, backoff and fallback rules as Gemini.
+    // The rules engine: the code chooser decides, no model is asked, nothing is spent.
+    if (this.engine === "rules") return fallbackDecide(ask, 0, "engine_rules");
+
+    // Jev, or an injected fake chooser (tests, e2e:fake-jev). Same cap, backoff and fallback rules as the others.
     if (this.client) return this.decideWithClient(ask, labels, t0);
 
     // Single-option menu (e.g. HOLD only): never waste tokens on a forced single choice.
     if (labels.length === 1) return fallbackDecide(ask, 0, "single_option");
 
-    // Fallback to pure code when there is no Gemini key, the daily cap is hit, or in backoff.
-    if (!this.opts.apiKey) return fallbackDecide(ask, 0, "no_key");
+    // Fallback to pure code when there is no key, the daily cap is hit, or in backoff.
+    const provider: LlmProvider | null = this.opts.provider === undefined ? "gemini" : this.opts.provider === "gemini" || this.opts.provider === "claude" || this.opts.provider === "openai" ? this.opts.provider : null;
+    if (!this.opts.apiKey || !provider) return fallbackDecide(ask, 0, "no_key");
     if (this.capTripped) return fallbackDecide(ask, 0, "cap");
     if (t0 < this.backoffUntil) return fallbackDecide(ask, 0, "backoff");
 
     // Snapshot + menu deduplication cache so identical market states do not re-bill Gemini.
     const stateNoClock = { ...ask.state, utc: undefined };
     const cacheKey = createHash("sha256")
-      .update(JSON.stringify({ s: ask.strategy, st: stateNoClock, m: labels }))
+      .update(JSON.stringify({ s: ask.strategy, st: stateNoClock, m: labels, c: ask.context ?? "" }))
       .digest("hex")
       .slice(0, 24);
     const cached = this.cache.get(cacheKey);
@@ -347,7 +373,7 @@ export class Jev {
       return { ok: true, source: "code", fallbackReason: "paced", choice: hold, probabilities, confidence: 1, conviction: 0, convictionRaw: 0, inputTokens: 0, costUsd: 0, latencyMs: 0, model: "paced" };
     }
 
-    const model = this.opts.model || "gemini-4-argon";
+    const model = this.opts.model || defaultModel(provider);
     const menuLines = labels.map((l) => `- ${l}${ask.menu[l]?.desc ? `: ${ask.menu[l]!.desc}` : ""}`).join("\n");
     const convSpec = ask.convictionLabels.map((c, i) => `${i}=${c}`).join(", ");
     const maxConv = Math.max(0, ask.convictionLabels.length - 1);
@@ -356,73 +382,50 @@ export class Jev {
       [
         ask.strategy,
         `State JSON: ${JSON.stringify(ask.state)}`,
+        ...(ask.context ? [`Context (news digest, events, similar past trades, owner notes). It may only make you more careful; it never adds moves:\n${ask.context}`] : []),
         `Valid moves (pick exactly one):\n${menuLines}`,
         `Conviction scale: ${convSpec}`,
         `Respond ONLY with JSON: {"choice":"<LABEL>","confidence":0.0..1.0,"conviction":0..${maxConv}}`,
       ].join("\n\n"),
     );
-
-    const body = JSON.stringify({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.1,
-        maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: "OBJECT",
-          properties: { choice: { type: "STRING", enum: labels }, confidence: { type: "NUMBER" }, conviction: { type: "INTEGER" } },
-          required: ["choice", "confidence", "conviction"],
-        },
-        ...(this.opts.thinkingLevel ? { thinkingConfig: { thinkingLevel: this.opts.thinkingLevel } } : {}),
+    const req: LlmRequest = {
+      prompt,
+      maxOutputTokens: LLM_MAX_OUTPUT_TOKENS,
+      temperature: 0.1,
+      jsonSchema: {
+        type: "object",
+        properties: { choice: { type: "string", enum: labels }, confidence: { type: "number" }, conviction: { type: "integer" } },
+        required: ["choice", "confidence", "conviction"],
+        additionalProperties: false,
       },
-    });
+      ...(this.opts.thinkingLevel && provider === "gemini" ? { thinkingLevel: this.opts.thinkingLevel } : {}),
+    };
 
-    // The cap is hard, also with three bees asking at once: reserve this call's worst case (input bound + the full
+    // The cap is hard, also with three wasps asking at once: reserve this call's worst case (input bound + the full
     // output budget) before it is sent, against settled spend PLUS every reservation still in flight.
-    const priceIn = this.opts.usdPerMTok;
-    const priceOut = this.opts.usdPerMTokOut ?? priceIn;
-    const inBound = inputTokenBound(body);
-    const worstUsd = (inBound * priceIn + GEMINI_MAX_OUTPUT_TOKENS * priceOut) / 1e6;
+    const prices = { inPerMTok: this.opts.usdPerMTok, outPerMTok: this.opts.usdPerMTokOut ?? this.opts.usdPerMTok };
+    const body = requestBody(provider, model, req);
+    const worstUsd = worstCaseUsd(body, LLM_MAX_OUTPUT_TOKENS, prices);
     const held = this.reserve(t0, paceKey, worstUsd);
     if (!held) return fallbackDecide(ask, 0, "reservation");
-    // What this call is charged. Until a response with usage metadata proves otherwise (timeout, network error, HTTP
-    // error, unreadable body), it is the worst case: billing for those is unknown, so it is counted as fully billed.
+    // What this call is charged. Until a response with usage proves otherwise (timeout, network error, HTTP error,
+    // unreadable body), it is the worst case: billing for those is unknown, so it is counted as fully billed.
     let chargedUsd = worstUsd;
 
     this.lastCallAt.set(paceKey, t0);
-    const doFetch = this.opts.fetchFn ?? fetch;
     try {
-      const res = await doFetch(`${GEMINI_BASE}/${encodeURIComponent(model)}:generateContent`, {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-goog-api-key": this.opts.apiKey },
-        signal: AbortSignal.timeout(this.opts.timeoutMs),
-        body,
-      });
-
+      const { res } = await callLlm({ provider, apiKey: this.opts.apiKey, model, timeoutMs: this.opts.timeoutMs, fetchFn: this.opts.fetchFn }, req);
       const latencyMs = this.now() - t0;
-      if (!res.ok) {
-        this.fail(t0);
-        log.warn("gemini call failed, code fallback", { status: res.status });
-        return { ...fallbackDecide(ask, latencyMs, "error"), costUsd: chargedUsd };
-      }
-
-      const data = (await res.json()) as GeminiResponse;
-      const u = data.usageMetadata;
-      const inputTokens = u?.promptTokenCount ?? inBound;
-      // No output counts at all = unknown: charge the whole output budget.
-      const outputTokens = u && (u.candidatesTokenCount !== undefined || u.thoughtsTokenCount !== undefined) ? (u.candidatesTokenCount ?? 0) + (u.thoughtsTokenCount ?? 0) : GEMINI_MAX_OUTPUT_TOKENS;
-      chargedUsd = (inputTokens * priceIn + outputTokens * priceOut) / 1e6;
+      const inputTokens = res.inputTokens ?? inputTokenBound(body);
+      chargedUsd = llmCharged(res, body, LLM_MAX_OUTPUT_TOKENS, prices);
       this.backoffStep = 0;
       this.backoffUntil = 0;
       this.downSince = null;
 
-      const text = (data.candidates?.[0]?.content?.parts ?? [])
-        .filter((p) => !p.thought)
-        .map((p) => p.text ?? "")
-        .join("");
-      const pick = parseChoice(text, labels, maxConv);
+      // Strict: Gemini and OpenAI answer under a response schema; Claude's adapter already unwrapped a fenced object.
+      const pick = parseChoice(res.text, labels, maxConv);
       if (!pick) {
-        log.warn("gemini answer not on the menu, code fallback", { finishReason: data.candidates?.[0]?.finishReason ?? null });
+        log.warn("model answer not on the menu, code fallback", { provider, finishReason: res.finishReason });
         return { ...fallbackDecide(ask, latencyMs, "off_menu"), inputTokens, costUsd: chargedUsd };
       }
 
@@ -432,7 +435,7 @@ export class Jev {
 
       const ans: JevAnswer = {
         ok: true,
-        source: "gemini",
+        source: provider,
         choice: pick.choice,
         probabilities,
         confidence: pick.confidence,
@@ -449,7 +452,8 @@ export class Jev {
     } catch (err) {
       const latencyMs = this.now() - t0;
       this.fail(t0);
-      log.warn("gemini call failed, code fallback", { err: safeError(err) });
+      if (err instanceof LlmHttpError) log.warn("model call failed, code fallback", { provider, status: err.status });
+      else log.warn("model call failed, code fallback", { provider, err: safeError(err) });
       return { ...fallbackDecide(ask, latencyMs, isTimeout(err) ? "timeout" : "error"), costUsd: chargedUsd };
     } finally {
       // Settle: release the reservation and book the charge, in memory and in the durable ledger.
@@ -515,6 +519,23 @@ export class Jev {
   }
 }
 
+function buildClient(opts: JevOpts): SystemOne | undefined {
+  if (opts.client) return opts.client;
+  if (opts.provider !== "jev" || !opts.apiKey) return undefined;
+  return new TypeSafeClient({
+    apiKey: opts.apiKey,
+    defaultModel: opts.model,
+    timeout: opts.timeoutMs,
+    retry: { maxRetries: 0 }, // we back off ourselves; a tick must not wait on SDK retries
+    logLevel: "off", // SDK debug logging would print request bodies
+  });
+}
+
+/** Default model per provider, when none is configured. */
+export function defaultModel(p: LlmProvider): string {
+  return p === "claude" ? "claude-haiku-5-5" : p === "openai" ? "gpt-5.4-nano" : "gemini-4-argon";
+}
+
 const isTimeout = (err: unknown): boolean => {
   const e = err as { name?: string; message?: string; code?: string };
   return /timeout|abort/i.test(`${e?.name ?? ""} ${e?.code ?? ""} ${e?.message ?? ""}`);
@@ -534,6 +555,23 @@ export async function checkJevKey(apiKey: string, model: string, timeoutMs = 10_
     if (status === 401 || status === 403) return "Jev rejected that key. Copy it again from console.typesafe.ai/keys.";
     const e = safeError(err);
     return `Could not reach Jev (${e.code}: ${e.message})`;
+  }
+}
+
+/** Setup page: look the Claude model up with the key (a free metadata call, no tokens). null = the key is good. */
+export async function checkClaudeKey(apiKey: string, model: string, timeoutMs = 10_000, fetchFn: typeof fetch = fetch): Promise<string | null> {
+  try {
+    const res = await fetchFn(`https://api.anthropic.com/v1/models/${encodeURIComponent(model)}`, {
+      headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (res.ok) return null;
+    if (res.status === 401 || res.status === 403) return "Anthropic rejected that key. Copy it again from console.anthropic.com.";
+    if (res.status === 404) return `That key cannot see ${model}. Set ANTHROPIC_MODEL to a model your account has.`;
+    return `Could not reach the Anthropic API (HTTP ${res.status})`;
+  } catch (err) {
+    const e = safeError(err);
+    return `Could not reach the Anthropic API (${e.code}: ${e.message})`;
   }
 }
 

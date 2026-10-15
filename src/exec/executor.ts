@@ -50,6 +50,8 @@ export class SimExecutor implements Executor {
     private market_: () => { tickers: Map<string, Ticker>; instruments: Map<string, Instrument> },
     private takerFeeRate: number,
     private now: () => number = Date.now,
+    /** Extra adverse slippage on every fill, in basis points (backtests; 0 for paper trading). */
+    private slippageBps = 0,
   ) {}
 
   async init(): Promise<void> {}
@@ -59,7 +61,8 @@ export class SimExecutor implements Executor {
     const t = tickers.get(req.instId);
     const inst = instruments.get(req.instId);
     if (!t || !inst) return { ok: false, error: { code: "SIM", message: "no ticker" }, state: "rejected" };
-    const px = req.side === "buy" ? (t.ask > 0 ? t.ask : t.last) : t.bid > 0 ? t.bid : t.last;
+    const touch = req.side === "buy" ? (t.ask > 0 ? t.ask : t.last) : t.bid > 0 ? t.bid : t.last;
+    const px = touch * (1 + ((req.side === "buy" ? 1 : -1) * this.slippageBps) / 10_000);
     const feeUsd = req.contracts * inst.ctVal * px * this.takerFeeRate;
     return { ok: true, ordId: null, contracts: req.contracts, avgPx: px, feeUsd, ts: this.now() };
   }

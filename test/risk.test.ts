@@ -337,23 +337,6 @@ describe("a hold while flat is accepted, and menu sanity", () => {
     expect(r.forcedBy).toBeNull();
   });
 
-  it("the global flat limit still caps a bee's own limit (both default to 1440, i.e. unused)", () => {
-    expect(testConfig().bees.bizzy.maxFlatMinutes).toBe(1440);
-    expect(testConfig({ BIZZY_MAX_FLAT_MINUTES: "45" }).bees.bizzy.maxFlatMinutes).toBe(45);
-    expect(testConfig({ MAX_FLAT_MINUTES: "10" }).bees.bizzy.maxFlatMinutes).toBe(10);
-  });
-
-  it("a brain without neverForce is still forced in after its flat limit, but never through a cooldown", () => {
-    const S = coin("S");
-    const forcing = { ...boozy, neverForce: false, forcedEntry: () => ({ kind: "open" as const, instId: S.instId, side: "long" as const, sizeFrac: 0.5, setup: "strict" as const }) };
-    const cfg = testConfig({ BOOZY_MAX_FLAT_MINUTES: "30" });
-    const due = run(ctx("boozy", bee("boozy", { flatSince: NOW - 31 * 60_000 }), view([S]), cfg), forcing, null, "no_options");
-    expect(due.forcedBy).toBe("max_flat");
-    const cooling = run(ctx("boozy", bee("boozy", { flatSince: NOW - 31 * 60_000, lastOrderAt: NOW - 31 * 60_000 }), view([S]), cfg), forcing, null, "no_options");
-    expect(cooling.forcedBy).toBeNull();
-    expect(cooling.status).toMatch(/cooling down/);
-  });
-
   it("rejects close while flat and open while positioned", () => {
     expect(run(ctx("bizzy", bee("bizzy", { flatSince: NOW }), V), bizzy, prop({ kind: "close", reason: "x" })).vetoedBy).toBe("invalid_while_flat");
     const b = bee("bizzy", { position: position(SOL), flatSince: null });

@@ -15,7 +15,8 @@ import { applyFill, applyFunding, freshBee, mark, rollDay, sizedRiskUsd } from "
 import { log } from "./log.js";
 import type { MarketFeed } from "./market/data.js";
 import { safeError } from "./redact.js";
-import { applyRisk, type JevStatus, type Proposal } from "./risk.js";
+import { applyRisk, type JevStatus, type PortfolioState, type Proposal, type RiskInput } from "./risk.js";
+import type { KnowledgeLayer } from "./knowledge/layer.js";
 import { buildSnapshot } from "./snapshot.js";
 
 const FUNDING_HOURS_UTC = [0, 8, 16];
@@ -41,6 +42,18 @@ export interface EngineDeps {
   takeResumeRequest?: () => boolean;
   /** The Beekeeper's rewrites (lab/store.ts). A bump of `version` rebuilds the brains on the next tick, no restart. */
   lab?: { readonly version: number; overlay(bee: BeeId): Overlay | null };
+  /** Runtime switches (controls.ts). Absent = the config defaults. */
+  controls?: () => { regimeFilter: boolean };
+  /** News digest, event calendar, trade memory, owner notes (knowledge/layer.ts). Absent = none. */
+  knowledge?: KnowledgeLayer | null;
+}
+
+interface PortfolioHalt {
+  kind: "drawdown" | "daily";
+  reason: string;
+  at: number;
+  /** "daily" halts clear on this UTC day change. */
+  day?: string;
 }
 
 interface LastDecision {
@@ -203,6 +216,7 @@ export class Engine {
       if (this.d.feed.lastRefreshAt === 0) return; // no market data yet
       if (this.d.exec.kind === "sim") this.simulateFunding(now);
 
+      this.checkPortfolio(now);
       if (this.closedAt === null && this.d.closeRequested?.()) this.beginClose(now);
       if (this.closedAt === null && this.d.takeResumeRequest?.()) await this.resumeLast(now);
       if (this.closedAt !== null) await this.windDown(now);
@@ -221,6 +235,123 @@ export class Engine {
     } finally {
       this.ticking = false;
     }
+  }
+
+  /** Everything applyRisk needs besides the proposal, built the same way on every path. */
+  private riskInput(id: BeeId, now: number, ctx: BeeContext, brain: BeeBrain, proposal: Proposal | null, jev: JevStatus): RiskInput {
+    const cfg = this.d.cfg;
+    const k = this.d.knowledge;
+    return {
+      ctx,
+      brain,
+      proposal,
+      jev,
+      sizeMult: this.sizeMult(now),
+      dataAgeMs: now - this.d.feed.lastRefreshAt,
+      maxDataAgeMs: 3 * cfg.dataRefreshMs + 30_000,
+      staleFlattenMs: cfg.risk.staleFlattenMs,
+      portfolio: this.portfolioState(id),
+      regimeFilter: this.d.controls ? this.d.controls().regimeFilter : cfg.risk.regimeFilter,
+      ...(k ? { knowledge: (instId: string, side: Side) => k.verdict(brain.id, ctx.view, instId, side) } : {}),
+    };
+  }
+
+  // ---------- portfolio ----------
+
+  private halt: PortfolioHalt | null = null;
+  private haltLoaded = false;
+
+  /** Total equity, the other wasps' net notional and who holds what: the portfolio rules' view for one wasp. */
+  portfolioState(id: BeeId): PortfolioState {
+    const view = this.d.feed.view();
+    let total = 0;
+    let othersNet = 0;
+    const byCoin: PortfolioState["othersByCoin"] = {};
+    for (const b of BEES) {
+      const s = this.bees[b];
+      if (!s) continue;
+      total += s.equityUsd;
+      if (b === id || !s.position) continue;
+      const p = s.position;
+      const inst = view.instruments.get(p.instId);
+      const mid = view.tickers.get(p.instId)?.mid ?? p.entryPx;
+      const n = inst ? positionNotional(p, mid, inst.ctVal) : 0;
+      othersNet += p.side === "long" ? n : -n;
+      const c = (byCoin[p.coin] ??= { long: 0, short: 0 });
+      c[p.side]++;
+    }
+    return {
+      halted: this.getHalt()?.reason ?? null,
+      totalEquityUsd: total,
+      othersNetUsd: othersNet,
+      netExposureMaxX: this.d.cfg.risk.netExposureMaxX,
+      othersByCoin: byCoin,
+      sameCoinMax: this.d.cfg.risk.sameCoinMaxWasps,
+    };
+  }
+
+  private getHalt(): PortfolioHalt | null {
+    if (!this.haltLoaded) {
+      this.haltLoaded = true;
+      const raw = this.d.db.getMeta("portfolio_halt");
+      try {
+        this.halt = raw ? (JSON.parse(raw) as PortfolioHalt) : null;
+      } catch {
+        this.halt = null;
+      }
+    }
+    return this.halt;
+  }
+
+  private setHalt(h: PortfolioHalt | null) {
+    this.halt = h;
+    this.haltLoaded = true;
+    this.d.db.setMeta("portfolio_halt", h ? JSON.stringify(h) : "");
+  }
+
+  /** The portfolio breaker: a drawdown from the peak (holds until the owner resumes) or a day's loss (clears at 00:00 UTC). */
+  private checkPortfolio(now: number) {
+    const { cfg, db } = this.d;
+    const total = BEES.reduce((a, b) => a + this.bees[b].equityUsd, 0);
+    const day = new Date(now).toISOString().slice(0, 10);
+    const h = this.getHalt();
+    if (h?.kind === "daily" && h.day !== day) {
+      this.setHalt(null);
+      this.d.bus.emit("status", { event: "portfolio_resumed", reason: "new UTC day" }, now);
+      this.d.alerts.send("portfolio resumed: new UTC day");
+    }
+    const peak = Math.max(Number(db.getMeta("portfolio_peak") ?? 0) || 0, total);
+    db.setMeta("portfolio_peak", String(peak));
+    let dayStart = Number(db.getMeta(`portfolio_day:${day}`) ?? NaN);
+    if (!Number.isFinite(dayStart)) {
+      dayStart = total;
+      db.setMeta(`portfolio_day:${day}`, String(total));
+    }
+    if (this.getHalt()) return;
+    const ddPct = peak > 0 ? ((peak - total) / peak) * 100 : 0;
+    const dayPct = dayStart > 0 ? ((dayStart - total) / dayStart) * 100 : 0;
+    let trip: PortfolioHalt | null = null;
+    if (ddPct >= cfg.risk.portfolioMaxDrawdownPct) trip = { kind: "drawdown", reason: `drawdown ${ddPct.toFixed(1)}% from peak $${peak.toFixed(0)} (owner resumes)`, at: now };
+    else if (dayPct >= cfg.risk.portfolioDailyLossPct) trip = { kind: "daily", reason: `down ${dayPct.toFixed(1)}% today (back at 00:00 UTC)`, at: now, day };
+    if (trip) {
+      this.setHalt(trip);
+      log.warn("portfolio breaker tripped", { reason: trip.reason });
+      this.d.bus.emit("status", { event: "portfolio_halt", reason: trip.reason }, now);
+      this.d.alerts.send(`portfolio halted: ${trip.reason}`);
+    }
+  }
+
+  /** Owner action: clear a tripped breaker. The drawdown is measured from today's equity from now on. */
+  resumePortfolio(): boolean {
+    if (!this.getHalt()) return false;
+    const now = this.now();
+    const total = BEES.reduce((a, b) => a + this.bees[b].equityUsd, 0);
+    this.setHalt(null);
+    this.d.db.setMeta("portfolio_peak", String(total));
+    this.d.db.setMeta(`portfolio_day:${new Date(now).toISOString().slice(0, 10)}`, String(total));
+    this.d.bus.emit("status", { event: "portfolio_resumed", reason: "owner" }, now);
+    this.d.alerts.send("portfolio resumed by the owner");
+    return true;
   }
 
   private ctx(id: BeeId, now: number): BeeContext {
@@ -269,7 +400,7 @@ export class Engine {
   }
 
   private async decide(id: BeeId, now: number): Promise<void> {
-    const { cfg, db, bus, jev } = this.d;
+    const { db, bus, jev } = this.d;
     const brain = this.brain(id);
     const bee = this.bees[id];
     // Benched (trade cap or fee budget): the bee rides whatever it holds. Jev is not asked, because nothing it
@@ -296,7 +427,9 @@ export class Engine {
     else {
       this.choosing.add(id);
       try {
-        r = await jev.decide({ strategy: brain.strategy, state: snap.state, menu, convictionLabels: brain.convictionLabels, key: id });
+        const k = this.d.knowledge;
+        const context = k ? k.context(brain.id, brain.snapshotCoins(ctx).map(coinOf), bee.position?.side ?? null) : "";
+        r = await jev.decide({ strategy: brain.strategy, state: snap.state, menu, convictionLabels: brain.convictionLabels, key: id, ...(context ? { context } : {}) });
       } finally {
         this.choosing.delete(id);
       }
@@ -307,15 +440,7 @@ export class Engine {
     const proposal: Proposal | null =
       r && r.ok ? { label: r.choice, intent: menu[r.choice]!.intent, prob: r.probabilities[r.choice] ?? 0, conviction: r.conviction } : null;
 
-    const risk = applyRisk({
-      ctx,
-      brain,
-      proposal,
-      jev: jevStatus,
-      sizeMult: this.sizeMult(now),
-      dataAgeMs: now - this.d.feed.lastRefreshAt,
-      maxDataAgeMs: 3 * cfg.dataRefreshMs + 30_000,
-    });
+    const risk = applyRisk(this.riskInput(id, now, ctx, brain, proposal, jevStatus));
 
     if (risk.capTripped) {
       const detail = risk.status;
@@ -326,7 +451,7 @@ export class Engine {
     bee.cap = risk.cap;
     // A rules-only hold that the risk layer left alone (a stop or cap still overrides it and shows as usual).
     const ruled = required && risk.action.kind === "none" && !risk.forcedBy;
-    const status = ruled ? `${labels[0]}: required by rules, ${chooserName(this.d.cfg.jev).short} not asked` : risk.status;
+    const status = ruled ? `${labels[0]}: required by rules, ${this.chooser().short} not asked` : risk.status;
 
     // Hard rule 10: recorded before it is acted on. With who actually decided: a code-fallback answer is never recorded,
     // streamed or shown as the model's.
@@ -405,15 +530,7 @@ export class Engine {
     const epoch = this.exitEpoch[id] ?? 0;
     const bee = this.bees[id];
     const ctx = this.ctx(id, now);
-    const risk = applyRisk({
-      ctx,
-      brain: this.brain(id),
-      proposal: null,
-      jev: "no_options",
-      sizeMult: this.sizeMult(now),
-      dataAgeMs: now - this.d.feed.lastRefreshAt,
-      maxDataAgeMs: 3 * this.d.cfg.dataRefreshMs + 30_000,
-    });
+    const risk = applyRisk(this.riskInput(id, now, ctx, this.brain(id), null, "no_options"));
     if (risk.capTripped) {
       db.insertCap(id, now, risk.capTripped, risk.status);
       this.d.bus.emit("cap", { bee: id, cap: risk.capTripped, detail: risk.status }, now);
@@ -531,7 +648,7 @@ export class Engine {
       this.d.db.setMeta("experiment_flat_at", String(now));
       this.lastReconAt = 0; // confirm flat against OKX on the next tick
       this.d.bus.emit("status", { event: "experiment_closed" }, now);
-      this.d.alerts.send("experiment closed: every bee is flat");
+      this.d.alerts.send("experiment closed: every wasp is flat");
     }
   }
 
@@ -540,16 +657,8 @@ export class Engine {
   /** True when code alone closes this bee's position this tick (stop, time stop, loss stop, retire). Pure. */
   private deterministicExit(id: BeeId, now: number): boolean {
     if (!this.bees[id].position) return false;
-    const pre = applyRisk({
-      ctx: this.ctx(id, now),
-      brain: this.brain(id),
-      proposal: null,
-      jev: "no_options",
-      sizeMult: this.sizeMult(now),
-      dataAgeMs: now - this.d.feed.lastRefreshAt,
-      maxDataAgeMs: 3 * this.d.cfg.dataRefreshMs + 30_000,
-    });
-    return pre.action.kind === "close" && pre.forcedBy !== null && ["stop", "time_stop", "loss_stop", "retired"].includes(pre.forcedBy);
+    const pre = applyRisk(this.riskInput(id, now, this.ctx(id, now), this.brain(id), null, "no_options"));
+    return pre.action.kind === "close" && pre.forcedBy !== null && ["stop", "time_stop", "loss_stop", "retired", "portfolio_halt", "stale_data"].includes(pre.forcedBy);
   }
 
   /**
@@ -674,6 +783,8 @@ export class Engine {
     p.initialStopPx = p.stopPx;
     const notional = positionNotional(p, p.entryPx, inst.ctVal);
     p.riskUsd = p.stopPx !== null ? (notional * Math.abs(p.entryPx - p.stopPx)) / p.entryPx : notional * 0.01;
+    p.risk0Usd = p.riskUsd;
+    if (this.d.knowledge) p.entryFeatures = this.d.knowledge.features(ctx.view, instId);
     if (s.trend) p.entryScore = s.trend.score;
   }
 
@@ -706,7 +817,9 @@ export class Engine {
     }
     db.updateOrder(orderId, "filled", res.ordId, null);
     const bee = this.bees[id];
+    const prev = bee.position;
     const realised = applyFill(bee, { instId, coin: inst.coin, side, contracts: res.contracts, px: res.avgPx, feeUsd: res.feeUsd, ctVal: inst.ctVal, ts: res.ts });
+    this.tradeBook(id, prev, realised, res.feeUsd, purpose, res.ts);
     const notionalUsd = res.contracts * inst.ctVal * res.avgPx;
     db.insertFill({ orderId, bee: id, ts: res.ts, instId, side, contracts: res.contracts, px: res.avgPx, notionalUsd, feeUsd: res.feeUsd, realisedUsd: realised });
     mark(bee, res.avgPx, inst.ctVal);
@@ -724,6 +837,34 @@ export class Engine {
       label: `${this.d.cfg.slots[id].name} ${dir} ${inst.coin} $${notionalUsd.toFixed(0)}`,
     });
     return true;
+  }
+
+  /** Keep each trade's net P&L on its position, and hand a finished trade to trade memory. */
+  private tradeBook(id: BeeId, prev: Position | null, realised: number, feeUsd: number, purpose: string, ts: number) {
+    const now = this.bees[id].position;
+    if (now && now !== prev) now.tradeNetUsd = -feeUsd; // a new position (from flat)
+    else if (now) now.tradeNetUsd = (now.tradeNetUsd ?? 0) + realised - feeUsd;
+    if (prev && now !== prev) {
+      const net = (prev.tradeNetUsd ?? 0) + realised - feeUsd;
+      if (this.d.knowledge && prev.entryFeatures) {
+        try {
+          this.d.knowledge.recordClose({
+            wasp: id,
+            style: this.d.cfg.slots[id].style,
+            coin: prev.coin,
+            side: prev.side,
+            openedAt: prev.openedAt,
+            closedAt: ts,
+            pnlUsd: net,
+            riskUsd: prev.risk0Usd ?? prev.riskUsd,
+            reason: purpose,
+            features: prev.entryFeatures,
+          });
+        } catch (err) {
+          log.warn("trade memory write failed", { err: safeError(err) });
+        }
+      }
+    }
   }
 
   // ---------- funding, reconciliation, ranks ----------
@@ -875,6 +1016,12 @@ export class Engine {
     return (this.brains[id] ??= customBrain(BRAINS[s.style], liveRules(s, lab?.overlay(id) ?? null)));
   }
 
+  /** The chooser's names right now (it can be switched at runtime). */
+  private chooser() {
+    const j = this.d.jev;
+    return chooserName({ provider: j.provider, model: j.model, engine: j.engine });
+  }
+
   private knobs(id: BeeId) {
     return this.d.cfg.bees[this.d.cfg.slots[id].style];
   }
@@ -882,11 +1029,11 @@ export class Engine {
   private checkJevOutage(now: number) {
     const since = this.d.jev.downSince;
     if (since === null) {
-      if (this.jevDownAlerted) this.d.alerts.send(`${chooserName(this.d.cfg.jev).full} is back`);
+      if (this.jevDownAlerted) this.d.alerts.send(`${this.chooser().full} is back`);
       this.jevDownAlerted = false;
     } else if (!this.jevDownAlerted && now - since > 5 * 60_000) {
       this.jevDownAlerted = true;
-      this.d.alerts.send(`${chooserName(this.d.cfg.jev).full} unreachable for over 5 minutes: bees are on the code fallback`);
+      this.d.alerts.send(`${this.chooser().full} unreachable for over 5 minutes: wasps are on the code fallback`);
     }
   }
 
@@ -952,7 +1099,7 @@ export class Engine {
       totals: { feesUsd: sum((b) => b.totals.feesUsd), fundingUsd: sum((b) => b.totals.fundingUsd), jevUsd: sum((b) => b.totals.jevUsd), pnlUsd: sum((b) => b.pnlUsd) },
       jev: {
         spentTodayUsd: Number(this.d.jev.spentTodayUsd.toFixed(4)),
-        dailyCapUsd: this.d.cfg.jev.dailyUsdCap,
+        dailyCapUsd: this.d.jev.dailyUsdCap,
         capTripped: this.d.jev.capTripped,
         down: this.d.jev.downSince !== null,
         // A call was refused today because its reservation did not fit under the cap (before settled spend reaches it).
@@ -960,11 +1107,32 @@ export class Engine {
         // The latest time the code chooser stood in for the model, and why (off-menu answers and errors included).
         lastFallback: this.d.jev.lastFallback,
         // The CONFIGURED chooser. Who made each call is the decision's own decidedBy.
-        provider: this.d.cfg.jev.provider,
-        name: chooserName(this.d.cfg.jev).short,
-        fullName: chooserName(this.d.cfg.jev).full,
+        provider: this.d.jev.provider,
+        engine: this.d.jev.engine,
+        model: this.d.jev.model,
+        name: this.chooser().short,
+        fullName: this.chooser().full,
       },
       recon: this.recon,
+      portfolio: (() => {
+        const ps = this.portfolioState("bee1" as BeeId);
+        const total = ps.totalEquityUsd;
+        let net = 0;
+        let gross = 0;
+        for (const b of bees) {
+          if (!b.position || b.position.sizeUsd === null) continue;
+          net += b.position.side === "long" ? b.position.sizeUsd : -b.position.sizeUsd;
+          gross += b.position.sizeUsd;
+        }
+        return {
+          equityUsd: Number(total.toFixed(2)),
+          peakUsd: Number((Number(this.d.db.getMeta("portfolio_peak") ?? total) || total).toFixed(2)),
+          netUsd: Number(net.toFixed(2)),
+          grossUsd: Number(gross.toFixed(2)),
+          netLimitUsd: Number((this.d.cfg.risk.netExposureMaxX * total).toFixed(2)),
+          halted: this.getHalt(),
+        };
+      })(),
       market: {
         refreshedAt: view.ts,
         universe: view.gated.map((i) => i.split("-")[0]),

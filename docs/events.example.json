@@ -1,0 +1,8 @@
+{
+  "events": [
+    { "at": "2026-01-01T18:00:00Z", "title": "EXAMPLE: replace with the real FOMC decision time", "impact": "high" },
+    { "at": "2026-01-01T13:30:00Z", "title": "EXAMPLE: replace with the real US CPI release time", "impact": "high" },
+    { "at": "2026-01-01T00:00:00Z", "title": "EXAMPLE: a token unlock that only matters for one coin", "impact": "medium", "coins": ["SUI"] },
+    { "at": "2026-01-01T12:00:00Z", "title": "EXAMPLE: custom windows", "impact": "high", "coins": ["*"], "beforeMin": 60, "afterMin": 120 }
+  ]
+}

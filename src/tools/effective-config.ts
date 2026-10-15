@@ -34,7 +34,7 @@ import { loadSettings, type Settings } from "../settings.js";
  * env file's value when it is set, else the default. Keep in step with the compose file.
  */
 export const COMPOSE_ENGINE_FIXED: Record<string, string> = { ENGINE_BIND: "0.0.0.0", ENGINE_PORT: "8080", DB_PATH: "/data/bees-{mode}.sqlite", SETTINGS_PATH: "/data/settings.json" };
-export const COMPOSE_ENGINE_DEFAULTS: Record<string, string> = { DRY_RUN: "true", MODE: "dry", TICK_MS: "10000", JEV_DAILY_USD_CAP: "2", GEMINI_DAILY_USD_CAP: "3", BEE_START_EQUITY_USD: "333", UPDATE_CHECK: "true", HIVE_URL: "https://beebots.tech" };
+export const COMPOSE_ENGINE_DEFAULTS: Record<string, string> = { DRY_RUN: "true", MODE: "dry", TICK_MS: "10000", JEV_DAILY_USD_CAP: "2", GEMINI_DAILY_USD_CAP: "3", BEE_START_EQUITY_USD: "333", UPDATE_CHECK: "true", HIVE_URL: "" };
 
 /** The env as the engine container sees it, from the env file alone. */
 export function composeEnv(file: Record<string, string | undefined>): Record<string, string | undefined> {
@@ -45,8 +45,8 @@ export function composeEnv(file: Record<string, string | undefined>): Record<str
 
 /** Env names that set a knob explicitly (a value pinned in .env survives an update and beats the new code default). */
 const KNOB_NAMES = [
-  ...STYLES.flatMap((s) => ["MAX_TRADES_PER_DAY", "FEE_BUDGET_USD_DAY", "SPREAD_GATE_BPS", "COOLDOWN_MINUTES", "STOP_ATR_MULT", "MAX_FLAT_MINUTES"].map((k) => `${s.toUpperCase()}_${k}`)),
-  "MAX_FLAT_MINUTES", "MAX_LEVERAGE", "MAX_NOTIONAL_USD_PER_BEE", "DAILY_LOSS_STOP_PCT", "BEE_RETIRE_AT_PCT", "LIVE_SIZE_MULTIPLIER", "LIVE_RAMP_HOURS",
+  ...STYLES.flatMap((s) => ["MAX_TRADES_PER_DAY", "FEE_BUDGET_USD_DAY", "SPREAD_GATE_BPS", "COOLDOWN_MINUTES", "STOP_ATR_MULT" ].map((k) => `${s.toUpperCase()}_${k}`)),
+  "MAX_LEVERAGE", "MAX_NOTIONAL_USD_PER_BEE", "DAILY_LOSS_STOP_PCT", "BEE_RETIRE_AT_PCT", "LIVE_SIZE_MULTIPLIER", "LIVE_RAMP_HOURS",
   "BREEZY_MIN_OPEN_PROB", "BREEZY_MIN_SIZE_USD", "BIZZY_SIZE_FRACTION", "BIZZY_UNIVERSE_SIZE", "BIZZY_TIME_STOP_MINUTES", "BOOZY_CANDIDATES",
   "GEMINI_MODEL", "GEMINI_TIMEOUT_MS", "GEMINI_DAILY_USD_CAP", "GEMINI_USD_PER_MTOK", "GEMINI_USD_PER_MTOK_OUT", "GEMINI_MIN_INTERVAL_MS", "GEMINI_THINKING_LEVEL",
   "JEV_MODEL", "JEV_TIMEOUT_MS", "JEV_DAILY_USD_CAP", "JEV_USD_PER_MTOK",

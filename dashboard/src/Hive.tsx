@@ -1,4 +1,4 @@
-// "Join the Hive" in the header: the public leaderboard at beebots.tech. Status comes from this install's own engine
+// "Join the Hive" in the header: only when this server has a Hive configured (HIVE_URL); hidden otherwise. Status comes from this install's own engine
 // (GET /hive/status, never the leaderboard itself), so the dashboard is the same whether or not the Hive is reachable.
 // Joining and leaving carry the owner password picked on Setup.
 import { useCallback, useEffect, useState } from "react";
@@ -15,7 +15,7 @@ function boardHost(url: string): string {
   try {
     return new URL(url).host;
   } catch {
-    return "beebots.tech";
+    return "the Hive";
   }
 }
 
@@ -48,7 +48,7 @@ function HiveDialog({ status, onClose, onStatus }: { status: HiveStatus; onClose
     }
   };
 
-  const board = status.board || "https://beebots.tech";
+  const board = status.board;
   const passwordOk = password.length >= 8;
   return (
     <div className="modal-back" onClick={(e) => e.target === e.currentTarget && onClose()}>

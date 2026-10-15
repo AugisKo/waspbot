@@ -1,4 +1,4 @@
-import { existsSync, unlinkSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Alerts } from "./alerts.js";
 import { BREEZY_COINS } from "./bees/breezy.js";
@@ -27,10 +27,23 @@ import { loadSettings, STYLE_INFO } from "./settings.js";
 import { imagePath, Setup } from "./setup.js";
 import { UpdateCheck } from "./update.js";
 import { Visitors } from "./visitors.js";
+import { ControlsStore, controlsPath, PROVIDERS, type Controls, type ProviderId } from "./controls.js";
+import { DailyBudget } from "./llm/budget.js";
+import { KnowledgeLlm } from "./llm/client.js";
+import { NewsHub } from "./news/hub.js";
+import { createRssProvider } from "./news/rss.js";
+import { createCryptoPanicProvider } from "./news/cryptopanic.js";
+import { createWebSearchProvider } from "./news/websearch.js";
+import type { NewsProvider } from "./news/types.js";
+import { EventCalendar } from "./knowledge/calendar.js";
+import { DigestStore } from "./knowledge/digest.js";
+import { KnowledgeLayer } from "./knowledge/layer.js";
+import { TradeMemory } from "./knowledge/memory.js";
+import { OwnerNotes } from "./knowledge/notes.js";
 
 const SETTINGS_PATH = process.env.SETTINGS_PATH?.trim() || "./data/settings.json";
-// Reference portraits for generated bees: the dashboard's default art (copied into the image by the Dockerfile).
-const REF_DIR = process.env.REF_DIR?.trim() || "./dashboard/public/bees";
+// Optional style references for generated portraits (REF_DIR with up to three .jpg files). None = text prompt only.
+const REF_DIR = process.env.REF_DIR?.trim() || "./data/portrait-refs";
 
 /** Names, rules, styles and pictures for the dashboard. The rules and coins are the ones each bee trades on right now. */
 function profile(cfg: Config | null, lab?: LabStore) {
@@ -50,9 +63,8 @@ function profile(cfg: Config | null, lab?: LabStore) {
             styleLabel: STYLE_INFO[s.style].label,
             rules: live.rules,
             coins: live.coins,
-            // A Setup-made bee only ever shows its own portrait (null = the dashboard's placeholder mark), never the
-            // original bees' art, which belongs to the three official bees.
-            img: s.customImage && imagePath(cfg.settingsPath, id) ? `/bee-image/${id}` : s.fromSetup ? null : `/bees/${s.style}.jpg`,
+            // A wasp shows its own generated portrait, or the dashboard's placeholder mark (null).
+            img: s.customImage && imagePath(cfg.settingsPath, id) ? `/bee-image/${id}` : null,
           };
         })
       : [],
@@ -69,6 +81,8 @@ function runSetup() {
     openai: { apiKey: env.OPENAI_API_KEY?.trim() || undefined, textModel: env.OPENAI_TEXT_MODEL?.trim() || "gpt-5.4-nano", imageModel: env.OPENAI_IMAGE_MODEL?.trim() || "gpt-image-2" },
     refDir: REF_DIR,
     windowMin: Math.max(1, Number(env.SETUP_WINDOW_MIN) || 120),
+    ...(env.SETUP_CODE?.trim() ? { code: env.SETUP_CODE.trim() } : {}),
+    claudeModel: env.ANTHROPIC_MODEL?.trim() || "claude-haiku-5-5",
     okxApiBase: env.OKX_API_BASE?.trim().replace(/\/+$/, "") || "https://eea.okx.com",
     onSaved: () => {
       log.info("settings saved; exiting so Docker restarts the engine with them");
@@ -82,7 +96,10 @@ function runSetup() {
 
 async function main() {
   const settings = loadSettings(SETTINGS_PATH);
-  if (!settings && !process.env.TYPESAFE_API_KEY?.trim() && !process.env.GEMINI_API_KEY?.trim()) return runSetup();
+  // Setup runs until there is a Setup file, unless the environment already says how to decide (a model key or
+  // DECISION_ENGINE=rules), in which case the engine starts straight from .env.
+  const env = process.env;
+  if (!settings && !env.TYPESAFE_API_KEY?.trim() && !env.GEMINI_API_KEY?.trim() && !env.ANTHROPIC_API_KEY?.trim() && env.DECISION_ENGINE?.trim() !== "rules") return runSetup();
   let cfg;
   try {
     cfg = loadConfig({ ...process.env, SETTINGS_PATH }, settings);
@@ -94,7 +111,7 @@ async function main() {
     throw err;
   }
   setLogLevel(cfg.logLevel);
-  log.info("beebots engine starting", { mode: cfg.mode, tickMs: cfg.tickMs, dataRefreshMs: cfg.dataRefreshMs, chooser: cfg.jev.provider, model: cfg.jev.model });
+  log.info("waspbot engine starting", { mode: cfg.mode, tickMs: cfg.tickMs, dataRefreshMs: cfg.dataRefreshMs, engine: cfg.jev.engine, chooser: cfg.jev.provider, model: cfg.jev.model });
 
   const db = new Db(cfg.dbPath);
   const bus = new EventBus(db);
@@ -107,9 +124,21 @@ async function main() {
 
   let engine: Engine | null = null;
   const held = () => (engine ? BEES.map((id) => engine!.bees[id]?.position?.instId).filter((x): x is string => !!x) : []);
-  // News needs a key: borrow the first Momentum bee's (demo/live only).
+
+  // Runtime controls (dashboard, owner password): engine, model, regime filter, news sources, knowledge parts.
+  const available = (): Record<ProviderId, boolean> => Object.fromEntries(PROVIDERS.map((p) => [p, !!cfg.llm[p]?.apiKey])) as Record<ProviderId, boolean>;
+  const controls = new ControlsStore(controlsPath(cfg.settingsPath), {
+    engine: cfg.jev.engine,
+    provider: cfg.jev.provider === "code" ? null : cfg.jev.provider,
+    regimeFilter: cfg.risk.regimeFilter,
+    news: { rss: cfg.news.rss, cryptopanic: cfg.news.cryptopanic, websearch: cfg.news.webSearch, okx: cfg.news.okx },
+    knowledge: { digest: cfg.knowledge.digest, calendar: cfg.knowledge.calendar, memory: cfg.knowledge.memory, notes: cfg.knowledge.notes },
+  });
+
+  // OKX's own sentiment feed needs a signed key: borrow the first Momentum wasp's (demo/live only). Switchable.
   const newsCreds = BEES.filter((b) => cfg.slots[b].style === "boozy").map((b) => cfg.creds[b]).find((c) => !!c);
-  const news = cfg.mode !== "dry" && newsCreds ? createNewsSource(cli, newsCreds, demo) : null;
+  const okxNews = cfg.mode !== "dry" && newsCreds ? createNewsSource(cli, newsCreds, demo) : null;
+  const news = okxNews ? (coins: string[]) => (controls.get().news.okx ? okxNews(coins) : Promise.resolve(null)) : null;
   const feed = new MarketFeed(
     api,
     {
@@ -130,7 +159,78 @@ async function main() {
   const startOfDay = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate());
   // Today's chooser spend survives a restart: the decisions' recorded cost, or the reservation ledger (which also holds
   // calls a restart cut off, at their worst case), whichever is higher.
-  const jev = new Jev({ ...cfg.jev, spentTodayUsd: Math.max(db.jevSpendSince(startOfDay), db.chooserSpendSince(startOfDay)), ledger: db });
+  const chooserFor = (c: Controls) => {
+    const p = c.provider && cfg.llm[c.provider]?.apiKey ? cfg.llm[c.provider]! : cfg.jev;
+    return { ...p, engine: c.engine };
+  };
+  const jev = new Jev({ ...chooserFor(controls.get()), spentTodayUsd: Math.max(db.jevSpendSince(startOfDay), db.chooserSpendSince(startOfDay)), ledger: db });
+  controls.onChange((c, prev) => {
+    if (c.engine !== prev.engine || c.provider !== prev.provider) {
+      const next = chooserFor(c);
+      jev.reconfigure({ engine: next.engine, provider: next.provider, apiKey: next.apiKey, model: next.model, timeoutMs: next.timeoutMs, dailyUsdCap: next.dailyUsdCap, usdPerMTok: next.usdPerMTok, usdPerMTokOut: next.usdPerMTokOut, minIntervalMs: next.minIntervalMs, thinkingLevel: next.thinkingLevel });
+      bus.emit("status", { event: "chooser_changed", engine: jev.engine, provider: jev.provider, model: jev.model });
+    }
+  });
+
+  // ----- news and the knowledge layer -----
+  const known = () => [...feed.view().instruments.values()].filter((i) => i.kind === "crypto" && i.state === "live").map((i) => i.coin);
+  const kc = cfg.knowledge;
+  const knowledgeBudget = new DailyBudget("knowledge", () => kc.dailyUsdCap, db);
+  const knowledgeLlm = kc.llm
+    ? new KnowledgeLlm({ provider: kc.llm.provider, apiKey: kc.llm.apiKey, model: kc.llm.model, timeoutMs: kc.llm.timeoutMs, prices: { inPerMTok: kc.llm.inPerMTok, outPerMTok: kc.llm.outPerMTok, perSearch: kc.llm.perSearch }, budget: knowledgeBudget })
+    : null;
+  const providers: NewsProvider[] = [];
+  if (cfg.news.rssFeeds.length) providers.push(createRssProvider({ feeds: cfg.news.rssFeeds, known }));
+  if (cfg.news.cryptopanicToken) providers.push(createCryptoPanicProvider({ token: cfg.news.cryptopanicToken, ...(cfg.news.cryptopanicUrl ? { url: cfg.news.cryptopanicUrl } : {}), known }));
+  if (knowledgeLlm) providers.push(createWebSearchProvider({ llm: () => knowledgeLlm, everyMs: cfg.news.webSearchEveryMs }));
+  // The coins worth news: what the wasps hold, their fixed coin lists, and the top of the universe.
+  const watchCoins = () => {
+    const v = feed.view();
+    const set = new Set<string>(held().map((id) => id.split("-")[0]!));
+    for (const id of BEES) for (const c of cfg.slots[id].coins) set.add(c);
+    for (const c of ["BTC", "ETH", "SOL"]) set.add(c);
+    for (const id of v.gated.slice(0, 8)) set.add(id.split("-")[0]!);
+    return [...set].slice(0, 20);
+  };
+  const hub = new NewsHub({ db, providers, enabled: (id) => controls.get().news[id] && (id !== "cryptopanic" || !!cfg.news.cryptopanicToken) && (id !== "websearch" || !!knowledgeLlm), coins: watchCoins });
+  const digests = new DigestStore({ db, hub, llm: () => knowledgeLlm, useLlm: () => controls.get().knowledge.digest, everyMs: kc.digestEveryMs });
+  // First start: put the example calendar (all dates in the past, so it never fires) where the owner will edit it.
+  try {
+    if (!existsSync(kc.eventsPath) && existsSync("./docs/events.example.json")) {
+      mkdirSync(dirname(kc.eventsPath), { recursive: true });
+      copyFileSync("./docs/events.example.json", kc.eventsPath);
+    }
+    mkdirSync(kc.notesDir, { recursive: true });
+  } catch (err) {
+    log.warn("could not create the example events file or the notes folder", { err: safeError(err) });
+  }
+  const calendar = new EventCalendar({ path: kc.eventsPath, ...(kc.eventsIcsUrl ? { icsUrl: kc.eventsIcsUrl } : {}) });
+  const memory = new TradeMemory(db);
+  const notes = new OwnerNotes({ dir: kc.notesDir, maxChars: kc.notesMaxChars });
+  const knowledge = new KnowledgeLayer({
+    digests,
+    calendar,
+    memory,
+    notes,
+    enabled: () => controls.get().knowledge,
+    memoryMinSamples: kc.memoryMinSamples,
+    digestMaxAgeMs: 6 * 3_600_000,
+  });
+  let knowledgeBusy = false;
+  const knowledgeTick = async () => {
+    if (knowledgeBusy) return;
+    knowledgeBusy = true;
+    try {
+      await hub.poll();
+      await calendar.refresh();
+      if (controls.get().knowledge.digest) await digests.refresh(watchCoins());
+    } catch (err) {
+      log.warn("knowledge refresh failed", { err: safeError(err) });
+    } finally {
+      knowledgeBusy = false;
+    }
+  };
+  log.info("knowledge layer", { newsSources: providers.map((p) => p.id), model: kc.llm ? `${kc.llm.provider}:${kc.llm.model}` : "keywords only", budgetUsdDay: kc.dailyUsdCap });
 
   // `deploy/close.sh` drops this file into the data volume to end the experiment cleanly (see Engine.windDown).
   const closeFlag = join(dirname(cfg.dbPath), `close-${cfg.mode}`);
@@ -159,7 +259,7 @@ async function main() {
       return last === null ? null : last + LAB_MIN_INTERVAL_MS;
     },
     snapshot: () => engine!.snapshot(),
-    board: new HiveBoard(cfg.hive.url),
+    ...(cfg.hive.url ? { board: new HiveBoard(cfg.hive.url) } : {}),
     closed: () => existsSync(closeFlag),
   });
   // Setup was run again since a rewrite was made: the owner's new rules stand, the old rewrites are dropped.
@@ -173,8 +273,11 @@ async function main() {
       log.warn("could not drop the rewrites from before the last Setup", { err: safeError(err) });
     }
   }
-  engine = new Engine({ cfg, db, feed, jev, exec, bus, alerts, closeRequested: () => existsSync(closeFlag), takeResumeRequest, lab: labStore });
+  engine = new Engine({ cfg, db, feed, jev, exec, bus, alerts, closeRequested: () => existsSync(closeFlag), takeResumeRequest, lab: labStore, controls: () => controls.get(), knowledge });
   await engine.start();
+  // News and digests on their own timer: a slow feed or model never delays a tick or a stop.
+  setTimeout(() => void knowledgeTick(), 5_000).unref?.();
+  const knowledgeTimer = setInterval(() => void knowledgeTick(), 60_000);
 
   // The owner password (picked on Setup) gates joining and leaving the Hive from the dashboard. Installs without one
   // (a Setup file from before it existed, or keys only in .env) can set OWNER_PASSWORD instead.
@@ -185,8 +288,8 @@ async function main() {
   // One gate for every owner action on the dashboard (the Hive, the Beekeeper), so wrong passwords count once.
   const ownerGate = new PasswordGate("x-owner-password", () => ownerPasswordHash, "owner password");
 
-  // The Hive (opt-in public leaderboard, paper only).
-  const hive = new Hive({
+  // A Hive (opt-in public leaderboard, paper only) only when HIVE_URL points at one. WaspBot ships with none.
+  const hive = !cfg.hive.url ? null : new Hive({
     ownerPasswordHash: () => ownerPasswordHash,
     gate: ownerGate,
     path: hivePath(cfg.settingsPath),
@@ -208,7 +311,7 @@ async function main() {
       };
     },
   });
-  hive.start(settings);
+  hive?.start(settings);
 
   if (cfg.lab.secret && !LabDoor.enabled(cfg.lab.secret)) log.warn("LAB_SECRET is under 32 characters: it is ignored");
   const door = new LabDoor({
@@ -235,8 +338,31 @@ async function main() {
   const server = startServer(
     {
       engine: { bus, db, visitors: new Visitors(db), snapshot: () => engine!.snapshot(), health: () => engine!.health(), update: () => updates.status() },
-      hive,
+      ...(hive ? { hive } : {}),
       keeper: keeperHttp,
+      controls: {
+        store: controls,
+        gate: ownerGate,
+        available,
+        resume: () => engine!.resumePortfolio(),
+        status: () => ({
+          chooser: { engine: jev.engine, provider: jev.provider, model: jev.model },
+          knowledgeModel: kc.llm ? { provider: kc.llm.provider, model: kc.llm.model } : null,
+          knowledgeBudget: { spentTodayUsd: Number(knowledgeBudget.spentTodayUsd.toFixed(4)), capUsd: kc.dailyUsdCap },
+          newsConfigured: { rss: cfg.news.rssFeeds.length > 0, cryptopanic: !!cfg.news.cryptopanicToken, websearch: !!knowledgeLlm, okx: !!okxNews },
+        }),
+      },
+      knowledge: () => {
+        const coins = watchCoins();
+        return {
+          news: hub.recent(null, 24, 40).map((i) => ({ title: i.title, url: i.url, publisher: i.publisher, publishedAt: i.publishedAt, coins: i.coins, source: i.source })),
+          counts: hub.stats(),
+          digests: coins.map((c) => digests.get(c)).filter((d) => d !== null),
+          events: calendar.upcoming(72).map((e) => ({ at: e.at, title: e.title, impact: e.impact, coins: e.coins })),
+          memory: { trades: memory.count(), byStyle: memory.byStyle() },
+          notes: controls.get().knowledge.notes ? notes.text().length : 0,
+        };
+      },
       lab: door,
       profile: () => profile(cfg, labStore),
       beeImage: (b) => (cfg.slots[b as keyof typeof cfg.slots]?.customImage ? imagePath(cfg.settingsPath, b) : null),
@@ -248,8 +374,9 @@ async function main() {
   const shutdown = (sig: string) => {
     log.info("shutting down", { sig });
     engine?.stop();
-    hive.stop();
+    hive?.stop();
     clearInterval(keeperTimer);
+    clearInterval(knowledgeTimer);
     updates.stop();
     server.close();
     db.close();
