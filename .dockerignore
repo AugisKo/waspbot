@@ -14,4 +14,4 @@ strategies
 !strategies/ARGON_INTENDED.json
 beekeeper
 dashboard
-!dashboard/public/bees
+!docs/events.example.json

@@ -2,6 +2,7 @@
 !Caddyfile
 !dashboard/package.json
 !dashboard/pnpm-lock.yaml
+!dashboard/pnpm-workspace.yaml
 !dashboard/index.html
 !dashboard/vite.config.ts
 !dashboard/tsconfig.json

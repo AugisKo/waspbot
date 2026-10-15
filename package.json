@@ -8,14 +8,6 @@
     "node": ">=22.13"
   },
   "packageManager": "pnpm@10.34.5",
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ],
-    "ignoredBuiltDependencies": [
-      "@okx_ai/okx-trade-cli"
-    ]
-  },
   "scripts": {
     "dev": "tsx --env-file-if-exists=.env src/index.ts",
     "start": "node dist/index.js",

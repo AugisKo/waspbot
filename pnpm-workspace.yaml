@@ -1,0 +1,9 @@
+# Build-script approvals. allowBuilds is pnpm 11's setting; the two lists below it are pnpm 10's. Keep both.
+# esbuild (used by tsx) may run its install step; the OKX CLI's is not needed (its JS runs without it).
+allowBuilds:
+  esbuild: true
+  "@okx_ai/okx-trade-cli": false
+onlyBuiltDependencies:
+  - esbuild
+ignoredBuiltDependencies:
+  - "@okx_ai/okx-trade-cli"
