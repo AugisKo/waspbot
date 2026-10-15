@@ -43,7 +43,8 @@ if (a.help) {
 }
 
 setLogLevel("error");
-const coins = (one("coins") ?? "BTC,ETH,SOL").split(",").map((c) => c.trim().toUpperCase()).filter(Boolean);
+// Commas or spaces: PowerShell turns BTC,ETH,SOL into "BTC ETH SOL".
+const coins = (one("coins") ?? "BTC,ETH,SOL").split(/[\s,]+/).map((c) => c.trim().toUpperCase()).filter(Boolean);
 const dataDir = one("data") ?? "./data/backtest/history";
 const histories: CoinHistory[] = a.synthetic
   ? coins.map((c, i) => syntheticHistory(c, { from: Date.UTC(2026, 0, 1), days: Number(one("days") ?? 120), startPx: c === "BTC" ? 90_000 : c === "ETH" ? 3_000 : 150 / (i + 1), seed: 1000 + i, volUsdPerBar: 5e6 }))
