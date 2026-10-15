@@ -12,17 +12,35 @@ function arg(name: string, def?: string): string | undefined {
   return v && !v.startsWith("--") ? v : "true";
 }
 
-const coins = (arg("coins", "BTC,ETH,SOL") ?? "").split(",").map((c) => c.trim().toUpperCase()).filter(Boolean);
+const coins = (arg("coins", "BTC,ETH,SOL") ?? "").split(/[\s,]+/).map((c) => c.trim().toUpperCase()).filter(Boolean);
 const days = Number(arg("days", "120"));
 const swap = arg("swap") === "true";
 const base = (arg("api") ?? (swap ? "https://www.okx.com" : "https://eea.okx.com")).replace(/\/+$/, "");
 const dir = arg("data", "./data/backtest/history")!;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** "fetch failed" says nothing: name the real network error (DNS, refused, TLS, timeout) and the host. */
+function netError(err: unknown, url: string): Error {
+  const e = err as { name?: string; message?: string; cause?: { code?: string; message?: string } };
+  const host = new URL(url).host;
+  const why = e.cause?.code ?? e.cause?.message ?? (e.name === "TimeoutError" ? "timeout after 20 s" : e.message ?? String(err));
+  const hint =
+    /ENOTFOUND|EAI_AGAIN/.test(why) ? "the name could not be looked up (no internet, or DNS blocked)"
+    : /ECONNREFUSED|ECONNRESET|ETIMEDOUT|timeout|UND_ERR_CONNECT/.test(why) ? "the connection was blocked or timed out (firewall, proxy, VPN or a regional block)"
+    : /CERT|SELF_SIGNED|UNABLE_TO_VERIFY/.test(why) ? "a certificate problem (often a corporate proxy that inspects HTTPS)"
+    : "";
+  return new Error(`cannot reach ${host}: ${why}${hint ? ` — ${hint}` : ""}`);
+}
+
 async function get<T>(path: string, q: Record<string, string>): Promise<T> {
   const url = `${base}${path}?${new URLSearchParams(q)}`;
   for (let attempt = 0; attempt < 5; attempt++) {
-    const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+    let res: Response;
+    try {
+      res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+    } catch (err) {
+      throw netError(err, url);
+    }
     if (res.status === 429) {
       await sleep(1000 * (attempt + 1));
       continue;
